@@ -31,6 +31,7 @@ type ConfigOptions struct {
 	ServerAddress string `envconfig:"server_address"`
 	PrivateKey    string `envconfig:"private_key"`
 	TenantID      string `envconfig:"tenant_id"`
+	Hostname      string `envconfig:"hostname"`
 }
 
 type Information struct {
@@ -183,6 +184,7 @@ func main() {
 			Info:     agent.Info,
 			Sessions: sessions,
 			DeviceAuth: &models.DeviceAuth{
+				Name:      opts.Name,
 				Identity:  agent.Identity,
 				TenantID:  opts.TenantID,
 				PublicKey: string(keygen.EncodePublicKeyToPem(agent.pubKey)),

@@ -45,6 +45,7 @@ func (s *service) AuthDevice(ctx context.Context, req *models.DeviceAuthRequest)
 	uid := sha256.Sum256(structhash.Dump(req.DeviceAuth, 1))
 
 	device := models.Device{
+		Name:      req.Name,
 		UID:       hex.EncodeToString(uid[:]),
 		Identity:  req.Identity,
 		Info:      req.Info,
