@@ -3,6 +3,7 @@ package mongo
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -196,10 +197,12 @@ func (s *Store) DeleteDevice(ctx context.Context, uid models.UID) error {
 	return nil
 }
 
-func (s *Store) AddDevice(ctx context.Context, d models.Device) error {
+func (s *Store) AddDevice(ctx context.Context, d models.Device, name string) error {
 	hostname := strings.Replace(d.Identity.MAC, ":", "-", -1)
-	if d.Name != "" {
-		hostname = d.Name
+	fmt.Println("NAME NAME NAME NAME")
+	fmt.Println(name)
+	if name != "" {
+		hostname = name
 	}
 
 	q := bson.M{

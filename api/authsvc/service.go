@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io/ioutil"
 	"os"
 	"strings"
@@ -45,7 +46,6 @@ func (s *service) AuthDevice(ctx context.Context, req *models.DeviceAuthRequest)
 	uid := sha256.Sum256(structhash.Dump(req.DeviceAuth, 1))
 
 	device := models.Device{
-		Name:      req.Name,
 		UID:       hex.EncodeToString(uid[:]),
 		Identity:  req.Identity,
 		Info:      req.Info,
@@ -58,7 +58,7 @@ func (s *service) AuthDevice(ctx context.Context, req *models.DeviceAuthRequest)
 		return nil, errors.New("device with this mac address already authored")
 	}
 
-	if err := s.store.AddDevice(ctx, device); err != nil {
+	if err := s.store.AddDevice(ctx, device, req.DeviceAuth.Name); err != nil {
 		return nil, err
 	}
 
@@ -93,6 +93,8 @@ func (s *service) AuthDevice(ctx context.Context, req *models.DeviceAuthRequest)
 	if err != nil {
 		return nil, err
 	}
+	fmt.Println("DEVICE NAME")
+	fmt.Println(device.Name)
 
 	return &models.DeviceAuthResponse{
 		UID:       hex.EncodeToString(uid[:]),
