@@ -18,6 +18,7 @@ EOF
 	esac
     done
 fi
+echo $HOSTNAME
 $SUDO docker run -d \
        --name=shellhub \
        --restart=on-failure \
@@ -31,5 +32,5 @@ $SUDO docker run -d \
        -e SERVER_ADDRESS={{scheme}}://{{host}} \
        -e PRIVATE_KEY=/host/etc/shellhub.key \
        -e TENANT_ID={{tenant_id}} \
-       -e HOSTNAME=$HOSTNAME
-       shellhubio/agent:{{version}}
+       -e HOSTNAME=$HOSTNAME \
+       agent:{{version}}
