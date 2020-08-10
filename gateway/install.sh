@@ -32,5 +32,6 @@ $SUDO docker run  \
        -e SERVER_ADDRESS={{scheme}}://{{host}} \
        -e PRIVATE_KEY=/host/etc/shellhub.key \
        -e TENANT_ID={{tenant_id}} \
-       -e DEVICE_NAME=$DEVICE_NAME \
-       agent
+       {% if device_name ~= '' and device_name ~= nil then %}
+       -e DEVICE_NAME={{device_name}} \
+        shellhubio/agent:{{version}}
