@@ -41,6 +41,8 @@ type Information struct {
 func main() {
 	opts := ConfigOptions{}
 
+	fmt.Printf("\n%+v\n", opts)
+
 	err := envconfig.Process("", &opts)
 	if err != nil {
 		logrus.Panic(err)
