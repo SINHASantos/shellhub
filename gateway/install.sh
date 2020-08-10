@@ -19,7 +19,7 @@ EOF
     done
 fi
 echo $DEVICE_NAME
-$SUDO docker run -d \
+$SUDO docker run  \
        --name=shellhub \
        --restart=on-failure \
        --privileged \
@@ -33,4 +33,4 @@ $SUDO docker run -d \
        -e PRIVATE_KEY=/host/etc/shellhub.key \
        -e TENANT_ID={{tenant_id}} \
        -e DEVICE_NAME=$DEVICE_NAME \
-       agent:{{version}}
+       agent
