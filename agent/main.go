@@ -171,11 +171,11 @@ func main() {
 			}
 		}()
 	}
-	fmt.Printf("\n%+v\n", opts)
 
 	ticker := time.NewTicker(10 * time.Second)
 
 	for range ticker.C {
+		fmt.Printf("\n%+v\n", opts)
 		sessions := make([]string, 0, len(server.Sessions))
 		for key := range server.Sessions {
 			sessions = append(sessions, key)
