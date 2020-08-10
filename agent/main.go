@@ -176,6 +176,7 @@ func main() {
 
 	for range ticker.C {
 		fmt.Println(opts.DeviceName)
+		fmt.Println(opts.TenantID)
 		sessions := make([]string, 0, len(server.Sessions))
 		for key := range server.Sessions {
 			sessions = append(sessions, key)
