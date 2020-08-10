@@ -41,8 +41,6 @@ type Information struct {
 func main() {
 	opts := ConfigOptions{}
 
-	fmt.Printf("\n%+v\n", opts)
-
 	err := envconfig.Process("", &opts)
 	if err != nil {
 		logrus.Panic(err)
@@ -173,6 +171,7 @@ func main() {
 			}
 		}()
 	}
+	fmt.Printf("\n%+v\n", opts)
 
 	ticker := time.NewTicker(10 * time.Second)
 
