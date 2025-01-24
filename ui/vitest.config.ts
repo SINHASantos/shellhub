@@ -1,7 +1,6 @@
 import { defineConfig } from "vitest/config";
 import vue from "@vitejs/plugin-vue";
 import vuetify from "vite-plugin-vuetify";
-
 import { fileURLToPath, URL } from "node:url";
 
 export default defineConfig({
@@ -12,8 +11,21 @@ export default defineConfig({
       "@": fileURLToPath(new URL("./src", import.meta.url)),
     },
   },
+  css: {
+    preprocessorOptions: {
+      sass: {
+        api: "modern-compiler",
+        silenceDeprecations: ["legacy-js-api"],
+      },
+    },
+  },
   // plugins
   plugins: [
+    vue() as any,
+    vuetify({
+      autoImport: true,
+      styles: { configFile: "./src/styles/variables.scss" },
+    }),
     {
       name: "vitest-plugin-beforeall",
       config: () => ({
@@ -24,14 +36,6 @@ export default defineConfig({
         },
       }),
     },
-    // Vue3
-    vue(),
-    // Vuetify Loader
-    // https://github.com/vuetifyjs/vuetify-loader
-    vuetify({
-      autoImport: true,
-      styles: { configFile: "./src/styles/variables.scss" },
-    }),
   ],
   test: {
     // https://vitest.dev/guide/#configuring-vitest
@@ -39,11 +43,12 @@ export default defineConfig({
     globalSetup: [fileURLToPath(new URL("./vitest/setup.ts", import.meta.url))],
     setupFiles: ["./vitest/vitest-canvas-mock.ts"],
     environment: "jsdom",
-    deps: {
-      inline: ["vuetify"],
+    server: {
+      deps: {
+        inline: ["vuetify"],
+      },
     },
     exclude: ["**/node_modules/**"],
     update: false,
-    threads: true,
   },
 });

@@ -29,6 +29,11 @@ const (
 	// ErrCodeStore is the error code for when the store function fails. The store function is responsible for execute
 	// the main service action.
 	ErrCodeStore
+	// ErrCodeNoContentChange is the error that occurs when the store function does not change any resource. Generally used in
+	// update methods.
+	ErrCodeNoContentChange
+	// ErrCodeCreated is the error code to be used when the resource was created, but the following operations failed.
+	ErrCodeCreated
 )
 
 // ErrDataNotFound structure should be used to add errors.Data to an error when the resource is not found.
@@ -60,6 +65,7 @@ var (
 	ErrReport                       = errors.New("report error", ErrLayer, ErrCodeInvalid)
 	ErrPaymentRequired              = errors.New("payment required", ErrLayer, ErrCodePayment)
 	ErrEvaluate                     = errors.New("evaluate error", ErrLayer, ErrCodeInvalid)
+	ErrNoContentChange              = errors.New("no content change", ErrLayer, ErrCodeNoContentChange)
 	ErrNotFound                     = errors.New("not found", ErrLayer, ErrCodeNotFound)
 	ErrBadRequest                   = errors.New("bad request", ErrLayer, ErrCodeInvalid)
 	ErrUnauthorized                 = errors.New("unauthorized", ErrLayer, ErrCodeInvalid)
@@ -111,6 +117,7 @@ var (
 	ErrAuthInvalid                  = errors.New("auth invalid", ErrLayer, ErrCodeInvalid)
 	ErrAuthUnathorized              = errors.New("auth unauthorized", ErrLayer, ErrCodeUnauthorized)
 	ErrNamespaceLimitReached        = errors.New("namespace limit reached", ErrLayer, ErrCodeLimit)
+	ErrNamespaceCreationIsForbidden = errors.New("namespace creation not permitted for user", ErrLayer, ErrCodeForbidden)
 	ErrDeviceRemovedCount           = errors.New("device removed count", ErrLayer, ErrCodeNotFound)
 	ErrDeviceRemovedInsert          = errors.New("device removed insert", ErrLayer, ErrCodeStore)
 	ErrDeviceRemovedFull            = errors.New("device removed full", ErrLayer, ErrCodePayment)
@@ -119,7 +126,23 @@ var (
 	ErrBillingReportNamespaceDelete = errors.New("billing report namespace delete", ErrLayer, ErrCodePayment)
 	ErrBillingReportDevice          = errors.New("billing report device", ErrLayer, ErrCodePayment)
 	ErrBillingEvaluate              = errors.New("billing evaluate", ErrLayer, ErrCodePayment)
+	ErrSameTags                     = errors.New("trying to update tags with the same content", ErrLayer, ErrCodeNoContentChange)
+	ErrAPIKeyNotFound               = errors.New("APIKey not found", ErrLayer, ErrCodeNotFound)
+	ErrAPIKeyDuplicated             = errors.New("APIKey duplicated", ErrLayer, ErrCodeDuplicated)
+	ErrAuthForbidden                = errors.New("user is authenticated but cannot access this resource", ErrLayer, ErrCodeForbidden)
+	ErrRoleInvalid                  = errors.New("role is invalid", ErrLayer, ErrCodeForbidden)
+	ErrUserDelete                   = errors.New("user couldn't be deleted", ErrLayer, ErrCodeInvalid)
+	ErrSetupForbidden               = errors.New("setup isn't allowed anymore", ErrLayer, ErrCodeForbidden)
 )
+
+func NewErrRoleInvalid() error {
+	return ErrRoleInvalid
+}
+
+// NewErrNotFound returns an error with the ErrDataNotFound and wrap an error.
+func NewErrNoContentChange(err error, next error) error {
+	return errors.Wrap(err, next)
+}
 
 // NewErrNotFound returns an error with the ErrDataNotFound and wrap an error.
 func NewErrNotFound(err error, id string, next error) error {
@@ -154,6 +177,11 @@ func NewErrUnathorized(err error, next error) error {
 	return errors.Wrap(err, next)
 }
 
+// NewErrBadRequest returns a error to be used when the access to a resource is not authorized.
+func NewErrRequest(err error, next error) error {
+	return errors.Wrap(err, next)
+}
+
 // NewErrForbidden return a error to be used when the access to a resource is forbidden.
 func NewErrForbidden(err error, next error) error {
 	return errors.Wrap(err, next)
@@ -164,9 +192,28 @@ func NewErrNamespaceNotFound(id string, next error) error {
 	return NewErrNotFound(ErrNamespaceNotFound, id, next)
 }
 
+// NewErrAPIKeyNotFound returns an error when the APIKey is not found.
+func NewErrAPIKeyNotFound(name string, next error) error {
+	return NewErrNotFound(ErrAPIKeyNotFound, name, next)
+}
+
+func NewErrAPIKeyInvalid(name string) error {
+	return NewErrAuthInvalid(map[string]interface{}{"api-key": name}, nil)
+}
+
+// NewErrAPIKeyDuplicated returns an error when the APIKey name is duplicated.
+func NewErrAPIKeyDuplicated(conflicts []string) error {
+	return NewErrDuplicated(ErrAPIKeyDuplicated, conflicts, nil)
+}
+
 // NewErrTagInvalid returns an error when the tag is invalid.
 func NewErrTagInvalid(tag string, next error) error {
 	return NewErrInvalid(ErrTagInvalid, map[string]interface{}{"name": tag}, next)
+}
+
+// NewErrSameTags returns an error when the
+func NewErrSameTags() error {
+	return NewErrNoContentChange(ErrSameTags, nil)
 }
 
 // NewErrTagEmpty returns an error when the none tag is found.
@@ -378,9 +425,19 @@ func NewErrAuthUnathorized(err error) error {
 	return NewErrUnathorized(ErrAuthUnathorized, err)
 }
 
+// NewErrBadRequest returns a error to be used when the auth is unauthorized.
+func NewErrBadRequest(err error) error {
+	return NewErrRequest(ErrBadRequest, err)
+}
+
 // NewErrNamespaceLimitReached a error to be used when the user namespace limit number is reached.
 func NewErrNamespaceLimitReached(limit int, err error) error {
 	return NewErrLimit(ErrNamespaceLimitReached, limit, err)
+}
+
+// NewErrNamespaceCreationIsForbidden a error, since user have no permition to add a new namespace
+func NewErrNamespaceCreationIsForbidden(limit int, err error) error {
+	return NewErrLimit(ErrNamespaceCreationIsForbidden, limit, err)
 }
 
 func NewErrDeviceRemovedCount(next error) error {
@@ -417,4 +474,16 @@ func NewErrBillingEvaluate(next error) error {
 
 func NewErrDeviceMaxDevicesReached(count int) error {
 	return NewErrLimit(ErrMaxDeviceCountReached, count, nil)
+}
+
+func NewErrAuthForbidden() error {
+	return NewErrForbidden(ErrAuthForbidden, nil)
+}
+
+func NewErrUserDelete(err error) error {
+	return NewErrInvalid(ErrUserDelete, nil, err)
+}
+
+func NewErrSetupForbidden(err error) error {
+	return NewErrForbidden(ErrSetupForbidden, err)
 }

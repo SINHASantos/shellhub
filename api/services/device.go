@@ -2,54 +2,36 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"net"
 	"strings"
 	"time"
 
 	"github.com/shellhub-io/shellhub/api/store"
-	req "github.com/shellhub-io/shellhub/pkg/api/internalclient"
-	"github.com/shellhub-io/shellhub/pkg/api/paginator"
+	"github.com/shellhub-io/shellhub/pkg/api/requests"
 	"github.com/shellhub-io/shellhub/pkg/envs"
 	"github.com/shellhub-io/shellhub/pkg/models"
 	"github.com/shellhub-io/shellhub/pkg/validator"
-	"github.com/sirupsen/logrus"
 )
 
 const StatusAccepted = "accepted"
 
 type DeviceService interface {
-	ListDevices(ctx context.Context, tenant string, pagination paginator.Query, filter []models.Filter, status models.DeviceStatus, sort, order string) ([]models.Device, int, error)
+	ListDevices(ctx context.Context, req *requests.DeviceList) ([]models.Device, int, error)
 	GetDevice(ctx context.Context, uid models.UID) (*models.Device, error)
 	GetDeviceByPublicURLAddress(ctx context.Context, address string) (*models.Device, error)
 	DeleteDevice(ctx context.Context, uid models.UID, tenant string) error
 	RenameDevice(ctx context.Context, uid models.UID, name, tenant string) error
 	LookupDevice(ctx context.Context, namespace, name string) (*models.Device, error)
-	OffineDevice(ctx context.Context, uid models.UID, online bool) error
+	OfflineDevice(ctx context.Context, uid models.UID) error
 	UpdateDeviceStatus(ctx context.Context, tenant string, uid models.UID, status models.DeviceStatus) error
-	SetDevicePosition(ctx context.Context, uid models.UID, ip string) error
-	DeviceHeartbeat(ctx context.Context, uid models.UID) error
 	UpdateDevice(ctx context.Context, tenant string, uid models.UID, name *string, publicURL *bool) error
 }
 
-func (s *service) ListDevices(ctx context.Context, tenant string, pagination paginator.Query, filter []models.Filter, status models.DeviceStatus, sort, order string) ([]models.Device, int, error) {
-	switch status {
-	case models.DeviceStatusPending, models.DeviceStatusRejected:
-		ns, err := s.store.NamespaceGet(ctx, tenant)
-		if err != nil {
-			return nil, 0, NewErrNamespaceNotFound(tenant, err)
-		}
-
-		count, err := s.store.DeviceRemovedCount(ctx, ns.TenantID)
-		if err != nil {
-			return nil, 0, NewErrDeviceRemovedCount(err)
-		}
-
-		if ns.HasMaxDevices() && int64(ns.DevicesCount)+count >= int64(ns.MaxDevices) {
-			return s.store.DeviceList(ctx, pagination, filter, status, sort, order, store.DeviceListModeMaxDeviceReached)
-		}
-	case models.DeviceStatusRemoved:
-		removed, count, err := s.store.DeviceRemovedList(ctx, tenant, pagination, filter, sort, order)
+func (s *service) ListDevices(ctx context.Context, req *requests.DeviceList) ([]models.Device, int, error) {
+	if req.DeviceStatus == models.DeviceStatusRemoved {
+		// TODO: unique DeviceList
+		removed, count, err := s.store.DeviceRemovedList(ctx, req.TenantID, req.Paginator, req.Filters, req.Sorter)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -62,7 +44,34 @@ func (s *service) ListDevices(ctx context.Context, tenant string, pagination pag
 		return devices, count, nil
 	}
 
-	return s.store.DeviceList(ctx, pagination, filter, status, sort, order, store.DeviceListModeDefault)
+	if req.TenantID != "" {
+		ns, err := s.store.NamespaceGet(ctx, req.TenantID, s.store.Options().CountAcceptedDevices())
+		if err != nil {
+			return nil, 0, NewErrNamespaceNotFound(req.TenantID, err)
+		}
+
+		if ns.HasMaxDevices() {
+			switch {
+			case envs.IsCloud():
+				removed, err := s.store.DeviceRemovedCount(ctx, ns.TenantID)
+				if err != nil {
+					return nil, 0, NewErrDeviceRemovedCount(err)
+				}
+
+				if ns.HasLimitDevicesReached(removed) {
+					return s.store.DeviceList(ctx, req.DeviceStatus, req.Paginator, req.Filters, req.Sorter, store.DeviceAcceptableFromRemoved)
+				}
+			case envs.IsEnterprise():
+				fallthrough
+			case envs.IsCommunity():
+				if ns.HasMaxDevicesReached() {
+					return s.store.DeviceList(ctx, req.DeviceStatus, req.Paginator, req.Filters, req.Sorter, store.DeviceAcceptableAsFalse)
+				}
+			}
+		}
+	}
+
+	return s.store.DeviceList(ctx, req.DeviceStatus, req.Paginator, req.Filters, req.Sorter, store.DeviceAcceptableIfNotAccepted)
 }
 
 func (s *service) GetDevice(ctx context.Context, uid models.UID) (*models.Device, error) {
@@ -138,15 +147,15 @@ func (s *service) RenameDevice(ctx context.Context, uid models.UID, name, tenant
 		PublicURL:  false,
 	}
 
-	if data, err := validator.ValidateStructFields(updatedDevice); err != nil {
-		return NewErrDeviceInvalid(data, err)
+	if ok, err := s.validator.Struct(updatedDevice); !ok || err != nil {
+		return NewErrDeviceInvalid(nil, err)
 	}
 
 	if device.Name == updatedDevice.Name {
 		return nil
 	}
 
-	otherDevice, err := s.store.DeviceGetByName(ctx, updatedDevice.Name, tenant)
+	otherDevice, err := s.store.DeviceGetByName(ctx, updatedDevice.Name, tenant, models.DeviceStatusAccepted)
 	if err != nil && err != store.ErrNoDocuments {
 		return NewErrDeviceNotFound(models.UID(updatedDevice.UID), err)
 	}
@@ -171,18 +180,21 @@ func (s *service) LookupDevice(ctx context.Context, namespace, name string) (*mo
 	return device, nil
 }
 
-func (s *service) OffineDevice(ctx context.Context, uid models.UID, online bool) error {
-	err := s.store.DeviceSetOnline(ctx, uid, online)
-	if err == store.ErrNoDocuments {
-		return NewErrDeviceNotFound(uid, err)
+func (s *service) OfflineDevice(ctx context.Context, uid models.UID) error {
+	if err := s.store.DeviceSetOffline(ctx, string(uid)); err != nil {
+		if errors.Is(err, store.ErrNoDocuments) {
+			return NewErrDeviceNotFound(uid, err)
+		}
+
+		return err
 	}
 
-	return err
+	return nil
 }
 
 // UpdateDeviceStatus updates the device status.
 func (s *service) UpdateDeviceStatus(ctx context.Context, tenant string, uid models.UID, status models.DeviceStatus) error {
-	namespace, err := s.store.NamespaceGet(ctx, tenant)
+	namespace, err := s.store.NamespaceGet(ctx, tenant, s.store.Options().CountAcceptedDevices())
 	if err != nil {
 		return NewErrNamespaceNotFound(tenant, err)
 	}
@@ -196,16 +208,32 @@ func (s *service) UpdateDeviceStatus(ctx context.Context, tenant string, uid mod
 		return NewErrDeviceStatusAccepted(nil)
 	}
 
+	// NOTICE: when the device is intended to be rejected or in pending status, we don't check for duplications as it
+	// is not going to be considered for connections.
+	if status == models.DeviceStatusPending || status == models.DeviceStatusRejected {
+		return s.store.DeviceUpdateStatus(ctx, uid, status)
+	}
+
+	// NOTICE: when the intended status is not accepted, we return an error because these status are not allowed
+	// to be set by the user.
+	if status != models.DeviceStatusAccepted {
+		return NewErrDeviceStatusInvalid(string(status), nil)
+	}
+
 	// NOTICE: when there is an already accepted device with the same MAC address, we need to update the device UID
 	// transfer the sessions and delete the old device.
-
 	sameMacDev, err := s.store.DeviceGetByMac(ctx, device.Identity.MAC, device.TenantID, models.DeviceStatusAccepted)
 	if err != nil && err != store.ErrNoDocuments {
 		return NewErrDeviceNotFound(models.UID(device.UID), err)
 	}
 
+	// TODO: move this logic to store's transactions.
 	if sameMacDev != nil && sameMacDev.UID != device.UID {
-		if err := s.store.SessionUpdateDeviceUID(ctx, models.UID(sameMacDev.UID), models.UID(device.UID)); err != nil {
+		if sameName, err := s.store.DeviceGetByName(ctx, device.Name, device.TenantID, models.DeviceStatusAccepted); sameName != nil && sameName.Identity.MAC != device.Identity.MAC {
+			return NewErrDeviceDuplicated(device.Name, err)
+		}
+
+		if err := s.store.SessionUpdateDeviceUID(ctx, models.UID(sameMacDev.UID), models.UID(device.UID)); err != nil && err != store.ErrNoDocuments {
 			return err
 		}
 
@@ -220,6 +248,10 @@ func (s *service) UpdateDeviceStatus(ctx context.Context, tenant string, uid mod
 		return s.store.DeviceUpdateStatus(ctx, uid, status)
 	}
 
+	if sameName, err := s.store.DeviceGetByName(ctx, device.Name, device.TenantID, models.DeviceStatusAccepted); sameName != nil {
+		return NewErrDeviceDuplicated(device.Name, err)
+	}
+
 	if status != models.DeviceStatusAccepted {
 		return s.store.DeviceUpdateStatus(ctx, uid, status)
 	}
@@ -231,7 +263,7 @@ func (s *service) UpdateDeviceStatus(ctx context.Context, tenant string, uid mod
 		}
 	case envs.IsCloud():
 		if namespace.Billing.IsActive() {
-			if err := s.BillingReport(s.client.(req.Client), namespace.TenantID, ReportDeviceAccept); err != nil {
+			if err := s.BillingReport(s.client, namespace.TenantID, ReportDeviceAccept); err != nil {
 				return NewErrBillingReportNamespaceDelete(err)
 			}
 		} else {
@@ -251,12 +283,12 @@ func (s *service) UpdateDeviceStatus(ctx context.Context, tenant string, uid mod
 					return NewErrDeviceRemovedCount(err)
 				}
 
-				if namespace.HasMaxDevices() && int64(namespace.DevicesCount)+count >= int64(namespace.MaxDevices) {
+				if namespace.HasMaxDevices() && namespace.HasLimitDevicesReached(count) {
 					return NewErrDeviceRemovedFull(namespace.MaxDevices, nil)
 				}
 			}
 
-			ok, err := s.BillingEvaluate(s.client.(req.Client), namespace.TenantID)
+			ok, err := s.BillingEvaluate(s.client, namespace.TenantID)
 			if err != nil {
 				return NewErrBillingEvaluate(err)
 			}
@@ -268,52 +300,6 @@ func (s *service) UpdateDeviceStatus(ctx context.Context, tenant string, uid mod
 	}
 
 	return s.store.DeviceUpdateStatus(ctx, uid, status)
-}
-
-// SetDevicePosition sets the position to a device from its IP.
-func (s *service) SetDevicePosition(ctx context.Context, uid models.UID, ip string) error {
-	ipParsed := net.ParseIP(ip)
-	position, err := s.locator.GetPosition(ipParsed)
-	if err != nil {
-		logrus.
-			WithError(err).
-			WithFields(logrus.Fields{
-				"uid": uid,
-				"ip":  ip,
-			}).Error("Failed to get device's position")
-	}
-
-	devicePosition := models.DevicePosition{
-		Longitude: position.Longitude,
-		Latitude:  position.Latitude,
-	}
-
-	err = s.store.DeviceSetPosition(ctx, uid, devicePosition)
-	if err != nil {
-		logrus.
-			WithError(err).
-			WithFields(logrus.Fields{
-				"uid": uid,
-				"ip":  ip,
-			}).Error("Failed to set device's position to database")
-
-		return err
-	}
-	logrus.WithFields(logrus.Fields{
-		"uid":      uid,
-		"ip":       ip,
-		"position": position,
-	}).Debug("Success to set device's position")
-
-	return nil
-}
-
-func (s *service) DeviceHeartbeat(ctx context.Context, uid models.UID) error {
-	if err := s.store.DeviceSetOnline(ctx, uid, true); err != nil {
-		return NewErrDeviceNotFound(uid, err)
-	}
-
-	return nil
 }
 
 func (s *service) UpdateDevice(ctx context.Context, tenant string, uid models.UID, name *string, publicURL *bool) error {
@@ -329,9 +315,13 @@ func (s *service) UpdateDevice(ctx context.Context, tenant string, uid models.UI
 			return nil
 		}
 
-		otherDevice, err := s.store.DeviceGetByName(ctx, *name, tenant)
+		if ok, err := s.validator.Var(*name, validator.DeviceNameTag); err != nil || !ok {
+			return NewErrDeviceInvalid(map[string]interface{}{"name": *name}, nil)
+		}
+
+		otherDevice, err := s.store.DeviceGetByName(ctx, *name, tenant, models.DeviceStatusAccepted)
 		if err != nil && err != store.ErrNoDocuments {
-			return NewErrDeviceNotFound(models.UID(device.UID), fmt.Errorf("failed to get device by name: %w", err))
+			return NewErrDeviceNotFound(models.UID(*name), fmt.Errorf("failed to get device by name: %w", err))
 		}
 
 		if otherDevice != nil {
@@ -347,5 +337,5 @@ func (s *service) UpdateDevice(ctx context.Context, tenant string, uid models.UI
 		}
 	}
 
-	return s.store.DeviceUpdate(ctx, uid, name, publicURL)
+	return s.store.DeviceUpdate(ctx, tenant, uid, name, publicURL)
 }

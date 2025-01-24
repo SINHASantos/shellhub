@@ -13,6 +13,7 @@ import (
 	"github.com/Masterminds/semver"
 	"github.com/docker/docker/api/types"
 	containertypes "github.com/docker/docker/api/types/container"
+	dockerimage "github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
@@ -134,6 +135,10 @@ func (d *dockerUpdater) CompleteUpdate() error {
 		return err
 	}
 
+	if err := d.stopContainer(container); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -174,7 +179,7 @@ func (d *dockerUpdater) stopContainer(container *dockerContainer) error {
 		return err
 	}
 
-	opts := types.ContainerRemoveOptions{Force: true, RemoveVolumes: true}
+	opts := containertypes.RemoveOptions{Force: true, RemoveVolumes: true}
 	err := d.api.ContainerRemove(ctx, container.info.ID, opts)
 
 	return err
@@ -194,7 +199,7 @@ func (d *dockerUpdater) updateContainer(container *dockerContainer, image, name 
 
 	netConfig := &network.NetworkingConfig{EndpointsConfig: container.info.NetworkSettings.Networks}
 
-	rd, err := d.api.ImagePull(ctx, image, types.ImagePullOptions{})
+	rd, err := d.api.ImagePull(ctx, image, dockerimage.PullOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -212,7 +217,7 @@ func (d *dockerUpdater) updateContainer(container *dockerContainer, image, name 
 		return nil, err
 	}
 
-	if err := d.api.ContainerStart(ctx, clone.ID, types.ContainerStartOptions{}); err != nil {
+	if err := d.api.ContainerStart(ctx, clone.ID, containertypes.StartOptions{}); err != nil {
 		return nil, err
 	}
 

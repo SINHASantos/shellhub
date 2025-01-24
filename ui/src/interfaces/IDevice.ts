@@ -34,7 +34,7 @@ export interface IDevice {
   tags: Array<string>;
 }
 
-export interface IUpdateDeviceTag {
+export interface IUpdateDeviceTags {
   uid: string;
   tags: UpdateTagsDeviceRequest;
 }
@@ -47,4 +47,21 @@ export interface IDeviceRename {
 export interface IDevicePostTag {
   uid: string;
   name: CreateDeviceTagRequest;
+}
+
+export interface FetchDevicesParams {
+  perPage?: number;
+  page?: number;
+  filter?: string;
+  status?: "accepted" | "pending" | "rejected";
+  sortStatusField: string;
+  sortStatusString: string;
+}
+export interface IDeviceMethods {
+    fetchDevices: (params: FetchDevicesParams) => Promise<void>;
+    getFilter: () => string;
+    getList: () => IDevice[];
+    getSortStatusField: () => string;
+    getSortStatusString: () => string;
+    getNumber: () => number;
 }

@@ -6,7 +6,7 @@ import (
 
 	"github.com/shellhub-io/shellhub/api/store"
 	"github.com/shellhub-io/shellhub/api/store/mocks"
-	"github.com/shellhub-io/shellhub/pkg/api/paginator"
+	"github.com/shellhub-io/shellhub/pkg/api/query"
 	"github.com/shellhub-io/shellhub/pkg/api/requests"
 	"github.com/shellhub-io/shellhub/pkg/api/responses"
 	storecache "github.com/shellhub-io/shellhub/pkg/cache"
@@ -124,7 +124,7 @@ func TestEvaluateKeyFilter(t *testing.T) {
 		t.Run(tc.description, func(t *testing.T) {
 			tc.requiredMocks()
 
-			service := NewService(store.Store(mock), privateKey, publicKey, storecache.NewNullCache(), clientMock, nil)
+			service := NewService(store.Store(mock), privateKey, publicKey, storecache.NewNullCache(), clientMock)
 			ok, err := service.EvaluateKeyFilter(ctx, tc.key, tc.device)
 			assert.Equal(t, tc.expected, Expected{ok, err})
 		})
@@ -138,7 +138,7 @@ func TestListPublicKeys(t *testing.T) {
 
 	clockMock.On("Now").Return(now).Twice()
 
-	s := NewService(store.Store(mock), privateKey, publicKey, storecache.NewNullCache(), clientMock, nil)
+	s := NewService(store.Store(mock), privateKey, publicKey, storecache.NewNullCache(), clientMock)
 
 	ctx := context.TODO()
 
@@ -155,28 +155,25 @@ func TestListPublicKeys(t *testing.T) {
 
 	cases := []struct {
 		description   string
-		ctx           context.Context
 		keys          []models.PublicKey
-		query         paginator.Query
+		paginator     query.Paginator
 		requiredMocks func()
 		expected      Expected
 	}{
 		{
 			description: "Fails when the query is invalid",
-			ctx:         ctx,
-			query:       paginator.Query{Page: -1, PerPage: 10},
+			paginator:   query.Paginator{Page: -1, PerPage: 10},
 			requiredMocks: func() {
-				mock.On("PublicKeyList", ctx, paginator.Query{Page: -1, PerPage: 10}).Return(nil, 0, errors.New("error", "", 0)).Once()
+				mock.On("PublicKeyList", ctx, query.Paginator{Page: -1, PerPage: 10}).Return(nil, 0, errors.New("error", "", 0)).Once()
 			},
 			expected: Expected{nil, 0, errors.New("error", "", 0)},
 		},
 		{
 			description: "Successful list the keys",
-			ctx:         ctx,
 			keys:        keys,
-			query:       paginator.Query{Page: 1, PerPage: 10},
+			paginator:   query.Paginator{Page: 1, PerPage: 10},
 			requiredMocks: func() {
-				mock.On("PublicKeyList", ctx, paginator.Query{Page: 1, PerPage: 10}).Return(keys, len(keys), nil).Once()
+				mock.On("PublicKeyList", ctx, query.Paginator{Page: 1, PerPage: 10}).Return(keys, len(keys), nil).Once()
 			},
 			expected: Expected{keys, len(keys), nil},
 		},
@@ -185,19 +182,20 @@ func TestListPublicKeys(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.description, func(t *testing.T) {
 			tc.requiredMocks()
-			returnedKeys, count, err := s.ListPublicKeys(ctx, tc.query)
+			returnedKeys, count, err := s.ListPublicKeys(ctx, tc.paginator)
 			assert.Equal(t, tc.expected, Expected{returnedKeys, count, err})
 		})
 	}
 
 	mock.AssertExpectations(t)
 }
+
 func TestGetPublicKeys(t *testing.T) {
 	mock := &mocks.Store{}
 
 	clockMock.On("Now").Return(now).Twice()
 
-	s := NewService(store.Store(mock), privateKey, publicKey, storecache.NewNullCache(), clientMock, nil)
+	s := NewService(store.Store(mock), privateKey, publicKey, storecache.NewNullCache(), clientMock)
 
 	ctx := context.TODO()
 
@@ -272,7 +270,7 @@ func TestUpdatePublicKeys(t *testing.T) {
 
 	ctx := context.TODO()
 
-	s := NewService(store.Store(mock), privateKey, publicKey, storecache.NewNullCache(), clientMock, nil)
+	s := NewService(store.Store(mock), privateKey, publicKey, storecache.NewNullCache(), clientMock)
 
 	type Expected struct {
 		key *models.PublicKey
@@ -453,7 +451,7 @@ func TestDeletePublicKeys(t *testing.T) {
 
 	clockMock.On("Now").Return(now).Twice()
 
-	s := NewService(store.Store(mock), privateKey, publicKey, storecache.NewNullCache(), clientMock, nil)
+	s := NewService(store.Store(mock), privateKey, publicKey, storecache.NewNullCache(), clientMock)
 
 	type Expected struct {
 		err error
@@ -555,7 +553,7 @@ func TestCreatePublicKeys(t *testing.T) {
 
 	clockMock.On("Now").Return(now)
 
-	s := NewService(store.Store(mock), privateKey, publicKey, storecache.NewNullCache(), clientMock, nil)
+	s := NewService(store.Store(mock), privateKey, publicKey, storecache.NewNullCache(), clientMock)
 
 	pubKey, _ := ssh.NewPublicKey(publicKey)
 

@@ -2,16 +2,29 @@ package internalclient
 
 import (
 	"errors"
-	"fmt"
 	"math"
 	"net"
 	"net/http"
-	"net/url"
 
 	resty "github.com/go-resty/resty/v2"
-	"github.com/shellhub-io/shellhub/pkg/models"
+	"github.com/shellhub-io/shellhub/pkg/worker"
 	"github.com/sirupsen/logrus"
 )
+
+type Client interface {
+	deviceAPI
+	namespaceAPI
+	billingAPI
+	sessionAPI
+	sshkeyAPI
+	firewallAPI
+}
+
+type client struct {
+	http   *resty.Client
+	logger *logrus.Logger
+	worker worker.Client
+}
 
 const (
 	DeviceUIDHeader = "X-Device-UID"
@@ -20,13 +33,13 @@ const (
 var (
 	ErrConnectionFailed = errors.New("connection failed")
 	ErrNotFound         = errors.New("not found")
+	ErrForbidden        = errors.New("forbidden")
 	ErrUnknown          = errors.New("unknown error")
 )
 
-type Opt func(*client) error
-
-func NewClient(opts ...Opt) Client {
+func NewClient(opts ...clientOption) (Client, error) {
 	httpClient := resty.New()
+	httpClient.SetBaseURL("http://api:8080")
 	httpClient.SetRetryCount(math.MaxInt32)
 	httpClient.AddRetryCondition(func(r *resty.Response, err error) bool {
 		if _, ok := err.(net.Error); ok { // if the error is a network error, retry.
@@ -36,16 +49,10 @@ func NewClient(opts ...Opt) Client {
 		return r.StatusCode() >= http.StatusInternalServerError && r.StatusCode() != http.StatusNotImplemented
 	})
 
-	c := &client{
-		host:   apiHost,
-		port:   apiPort,
-		scheme: apiScheme,
-		http:   httpClient,
-	}
-
+	c := &client{http: httpClient}
 	for _, opt := range opts {
 		if err := opt(c); err != nil {
-			return nil
+			return nil, err
 		}
 	}
 
@@ -53,74 +60,12 @@ func NewClient(opts ...Opt) Client {
 		httpClient.SetLogger(&LeveledLogger{c.logger})
 	}
 
-	return c
+	return c, nil
 }
 
-type commonAPI interface {
-	ListDevices() ([]models.Device, error)
-	GetDevice(uid string) (*models.Device, error)
-	GetDeviceByPublicURLAddress(address string) (*models.Device, error)
-}
-
-type client struct {
-	scheme string
-	host   string
-	port   int
-	http   *resty.Client
-	logger *logrus.Logger
-}
-
-func (c *client) ListDevices() ([]models.Device, error) {
-	list := []models.Device{}
-	_, err := c.http.R().
-		SetResult(list).
-		Get(buildURL(c, "/api/devices"))
-
-	return list, err
-}
-
-func (c *client) GetDevice(uid string) (*models.Device, error) {
-	var device *models.Device
-	resp, err := c.http.R().
-		SetResult(&device).
-		Get(buildURL(c, fmt.Sprintf("/api/devices/%s", uid)))
-	if err != nil {
-		return nil, ErrConnectionFailed
+// mustWorker panics if [client.worker] is nil.
+func (c *client) mustWorker() {
+	if c.worker == nil {
+		panic("Client does not have any worker")
 	}
-
-	switch resp.StatusCode() {
-	case 400:
-		return nil, ErrNotFound
-	case 200:
-		return device, nil
-	default:
-		return nil, ErrUnknown
-	}
-}
-
-func (c *client) GetDeviceByPublicURLAddress(address string) (*models.Device, error) {
-	httpClient := resty.New()
-
-	var device *models.Device
-	resp, err := httpClient.R().
-		SetResult(&device).
-		Get(buildURL(c, fmt.Sprintf("/internal/devices/public/%s", address)))
-	if err != nil {
-		return nil, ErrConnectionFailed
-	}
-
-	switch resp.StatusCode() {
-	case 404:
-		return nil, ErrNotFound
-	case 200:
-		return device, nil
-	default:
-		return nil, ErrUnknown
-	}
-}
-
-func buildURL(c *client, uri string) string {
-	u, _ := url.Parse(fmt.Sprintf("%s://%s:%d%s", c.scheme, c.host, c.port, uri))
-
-	return u.String()
 }

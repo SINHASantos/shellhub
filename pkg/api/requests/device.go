@@ -1,5 +1,18 @@
 package requests
 
+import (
+	"github.com/shellhub-io/shellhub/pkg/api/query"
+	"github.com/shellhub-io/shellhub/pkg/models"
+)
+
+type DeviceList struct {
+	TenantID     string              `header:"X-Tenant-ID"`
+	DeviceStatus models.DeviceStatus `query:"status"` //  TODO: validate
+	query.Paginator
+	query.Sorter
+	query.Filters
+}
+
 // DeviceParam is a structure to represent and validate a device UID as path param.
 type DeviceParam struct {
 	UID string `param:"uid" validate:"required"`
@@ -40,11 +53,6 @@ type DeviceUpdateStatus struct {
 	Status string `param:"status" validate:"required,oneof=accept reject pending unused"`
 }
 
-// DeviceHeartbeat is the structure to represent the request data for device heartbeat endpoint.
-type DeviceHeartbeat struct {
-	DeviceParam
-}
-
 // DeviceCreateTag is the structure to represent the request data for device create tag endpoint.
 type DeviceCreateTag struct {
 	DeviceParam
@@ -79,7 +87,7 @@ type DeviceInfo struct {
 type DeviceAuth struct {
 	Info      *DeviceInfo     `json:"info" validate:"required"`
 	Sessions  []string        `json:"sessions,omitempty"`
-	Hostname  string          `json:"hostname,omitempty" validate:"required_without=Identity,omitempty,hostname_rfc1123" hash:"-"`
+	Hostname  string          `json:"hostname,omitempty" validate:"required_without=Identity,omitempty,device_name" hash:"-"`
 	Identity  *DeviceIdentity `json:"identity,omitempty" validate:"required_without=Hostname,omitempty"`
 	PublicKey string          `json:"public_key" validate:"required"`
 	TenantID  string          `json:"tenant_id" validate:"required"`

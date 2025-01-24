@@ -1,6 +1,6 @@
 <template>
-  <v-table class="bg-v-theme-surface">
-    <thead data-test="privateKey-thead">
+  <v-table class="bg-background border rounded mx-4">
+    <thead class="bg-v-theme-background" data-test="privateKey-thead">
       <tr>
         <th
           v-for="(head, i) in headers"
@@ -16,7 +16,7 @@
         <td class="text-center" data-test="privateKey-name">
           {{ privateKey.name }}
         </td>
-        <td class="text-center" data-test="privateKey-fingerpint">
+        <td class="text-center" data-test="privateKey-fingerprint">
           {{ convertToFingerprint(privateKey.data) }}
         </td>
         <td class="text-center">
@@ -26,17 +26,15 @@
             eager
           >
             <template v-slot:activator="{ props }">
-              <v-chip
+              <v-btn
                 v-bind="props"
-                class="bg-v-theme-surface"
-                data-test="privateKey-chip"
+                variant="plain"
+                class="border rounded bg-v-theme-background"
                 density="comfortable"
-                size="small"
-              >
-                <v-icon data-test="privateKey-menu-icon"
-                >mdi-dots-horizontal</v-icon
-                >
-              </v-chip>
+                size="default"
+                icon="mdi-format-list-bulleted"
+                data-test="privateKey-actions"
+              />
             </template>
             <v-list class="bg-v-theme-surface" lines="two" density="compact">
               <PrivateKeyEdit
@@ -45,7 +43,7 @@
               />
 
               <PrivateKeyDelete
-                :fingerprint="privateKey.data"
+                :id="privateKey.id"
                 @update="getPrivateKeys"
               />
             </v-list>
@@ -53,63 +51,52 @@
         </td>
       </tr>
     </tbody>
-    <div v-else sm="12" class="text-start mt-2 text-medium-emphasis">
-      <span>No data avaliable</span>
+    <div v-else sm="12" class="text-start mt-2 mb-3" data-test="no-private-key-warning">
+      <span class="ml-4">No data avaliable</span>
     </div>
   </v-table>
 </template>
 
-<script lang="ts">
-import { computed, defineComponent, onMounted } from "vue";
+<script setup lang="ts">
+import { computed, onMounted } from "vue";
 import { useStore } from "../../store";
 import { convertToFingerprint } from "../../utils/validate";
 import PrivateKeyDelete from "./PrivateKeyDelete.vue";
 import PrivateKeyEdit from "./PrivateKeyEdit.vue";
 import handleError from "@/utils/handleError";
 
-export default defineComponent({
-  setup() {
-    const store = useStore();
-    const getListPrivateKeys = computed(() => store.getters["privateKey/list"]);
-
-    const getPrivateKeys = async () => {
-      try {
-        await store.dispatch("privateKey/fetch");
-      } catch (error: unknown) {
-        handleError(error);
-      }
-    };
-
-    onMounted(() => {
-      getPrivateKeys();
-    });
-
-    return {
-      headers: [
-        {
-          text: "Name",
-          value: "name",
-          align: "center",
-          sortable: true,
-        },
-        {
-          text: "Fingerprint",
-          value: "data",
-          align: "center",
-          sortable: true,
-        },
-        {
-          text: "Actions",
-          value: "actions",
-          align: "center",
-          sortable: false,
-        },
-      ],
-      getListPrivateKeys,
-      convertToFingerprint,
-      getPrivateKeys,
-    };
+const store = useStore();
+const headers = [
+  {
+    text: "Name",
+    value: "name",
+    align: "center",
+    sortable: true,
   },
-  components: { PrivateKeyDelete, PrivateKeyEdit },
+  {
+    text: "Fingerprint",
+    value: "data",
+    align: "center",
+    sortable: true,
+  },
+  {
+    text: "Actions",
+    value: "actions",
+    align: "center",
+    sortable: false,
+  },
+];
+const getListPrivateKeys = computed(() => store.getters["privateKey/list"]);
+
+const getPrivateKeys = async () => {
+  try {
+    await store.dispatch("privateKey/fetch");
+  } catch (error: unknown) {
+    handleError(error);
+  }
+};
+
+onMounted(() => {
+  getPrivateKeys();
 });
 </script>

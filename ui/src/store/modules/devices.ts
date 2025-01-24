@@ -7,7 +7,10 @@ import { State } from "..";
 
 export interface DevicesState {
   devices: Array<IDevice>;
+  quickConnectionList: Array<IDevice>;
   device: IDevice;
+  showDevices: boolean;
+  totalCount: number;
   numberDevices: number;
   page: number;
   perPage: number;
@@ -19,14 +22,18 @@ export interface DevicesState {
   devicesForUserToChoose: Array<IDevice>;
   numberdevicesForUserToChoose: number;
   devicesSelected: Array<IDevice>;
+  deviceName: string;
   }
 
 export const devices: Module<DevicesState, State> = {
   namespaced: true,
   state: {
     devices: [],
+    quickConnectionList: [],
     device: {} as IDevice,
+    showDevices: false,
     numberDevices: 0,
+    totalCount: 0,
     page: 1,
     perPage: 10,
     filter: "",
@@ -37,12 +44,16 @@ export const devices: Module<DevicesState, State> = {
     devicesForUserToChoose: [],
     numberdevicesForUserToChoose: 0,
     devicesSelected: [],
+    deviceName: "",
   },
 
   getters: {
     list: (state) => state.devices,
+    listQuickConnection: (state) => state.quickConnectionList,
     get: (state) => state.device,
+    getName: (state) => state.device.name,
     getNumberDevices: (state) => state.numberDevices,
+    getShowDevices: (state) => state.showDevices,
     getPage: (state) => state.page,
     getPerPage: (state) => state.perPage,
     getFilter: (state) => state.filter,
@@ -54,12 +65,25 @@ export const devices: Module<DevicesState, State> = {
     getDevicesForUserToChoose: (state) => state.devicesForUserToChoose,
     getNumberForUserToChoose: (state) => state.numberdevicesForUserToChoose,
     getDevicesSelected: (state) => state.devicesSelected,
+    getDeviceToBeRenamed: (state) => state.deviceName,
   },
 
   mutations: {
     setDevices: (state, res) => {
       state.devices = res.data;
       state.numberDevices = parseInt(res.headers["x-total-count"], 10);
+    },
+
+    setShowDevices: (state) => {
+      state.showDevices = true;
+    },
+
+    setQuickDevices: (state, res) => {
+      state.quickConnectionList = res.data;
+    },
+
+    clearQuickDevices: (state) => {
+      state.quickConnectionList = [];
     },
 
     removeDevice: (state, uid) => {
@@ -123,6 +147,10 @@ export const devices: Module<DevicesState, State> = {
       state.devicesForUserToChoose = [];
       state.numberdevicesForUserToChoose = 0;
     },
+
+    updateDeviceToBeRenamed(state, device) {
+      state.deviceName = device;
+    },
   },
 
   actions: {
@@ -136,14 +164,12 @@ export const devices: Module<DevicesState, State> = {
           data.sortStatusField,
           data.sortStatusString,
         );
-        if (res.data.length) {
-          commit("setDevices", res);
-          commit("setPagePerpageFilter", data);
-          return res;
+        if (res.data.length && data.committable === false) {
+          commit("setShowDevices");
+          return;
         }
-
-        commit("clearListDevices");
-        return false;
+        commit("setDevices", res);
+        commit("setPagePerpageFilter", data);
       } catch (error) {
         commit("clearListDevices");
         throw error;
@@ -223,6 +249,46 @@ export const devices: Module<DevicesState, State> = {
         commit("setFilter", data.filter);
       } catch (error) {
         commit("clearListDevices");
+        throw error;
+      }
+    },
+
+    fetchQuickDevices: async ({ commit }, data) => {
+      try {
+        const res = await apiDevice.fetchDevices(
+          data.page,
+          data.perPage,
+          data.filter,
+          data.status,
+          data.sortStatusField,
+          data.sortStatusString,
+        );
+        if (res.data.length) {
+          commit("setQuickDevices", res);
+          return res;
+        }
+
+        commit("clearQuickDevices");
+        return false;
+      } catch (error) {
+        commit("clearQuickDevices");
+        throw error;
+      }
+    },
+
+    async searchQuickConnection({ commit, state }, data) {
+      try {
+        const res = await apiDevice.fetchDevices(
+          data.page,
+          data.perPage,
+          data.filter,
+          state.status,
+          state.sortStatusField,
+          state.sortStatusString,
+        );
+        commit("setQuickDevices", res);
+      } catch (error) {
+        commit("clearQuickDevices");
         throw error;
       }
     },
@@ -309,11 +375,15 @@ export const devices: Module<DevicesState, State> = {
 
     updateDeviceTag: async (context, data) => {
       try {
-        await apiDevice.updateDeviceTag(data);
+        await apiDevice.updateDeviceTags(data);
       } catch (error) {
         console.error(error);
         throw error;
       }
+    },
+
+    setDeviceToBeRenamed(context, device) {
+      context.commit("updateDeviceToBeRenamed", device);
     },
   },
 };

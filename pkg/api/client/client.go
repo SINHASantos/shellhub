@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -10,53 +11,27 @@ import (
 
 	resty "github.com/go-resty/resty/v2"
 	"github.com/shellhub-io/shellhub/pkg/models"
-	"github.com/sirupsen/logrus"
+	"github.com/shellhub-io/shellhub/pkg/revdial"
+	log "github.com/sirupsen/logrus"
 )
-
-const (
-	DeviceUIDHeader = "X-Device-UID"
-)
-
-var (
-	ErrConnectionFailed = errors.New("connection failed")
-	ErrNotFound         = errors.New("not found")
-	ErrUnknown          = errors.New("unknown error")
-)
-
-func NewClient(opts ...Opt) Client {
-	httpClient := resty.New()
-	httpClient.SetRetryCount(math.MaxInt32)
-	httpClient.AddRetryCondition(func(r *resty.Response, err error) bool {
-		if _, ok := err.(net.Error); ok {
-			return true
-		}
-
-		return r.StatusCode() >= http.StatusInternalServerError && r.StatusCode() != http.StatusNotImplemented
-	})
-
-	c := &client{
-		host:   apiHost,
-		port:   apiPort,
-		scheme: apiScheme,
-		http:   httpClient,
-	}
-
-	for _, opt := range opts {
-		if err := opt(c); err != nil {
-			return nil
-		}
-	}
-
-	if c.logger != nil {
-		httpClient.SetLogger(&LeveledLogger{c.logger})
-	}
-
-	return c
-}
 
 type commonAPI interface {
 	ListDevices() ([]models.Device, error)
 	GetDevice(uid string) (*models.Device, error)
+}
+
+type publicAPI interface {
+	GetInfo(agentVersion string) (*models.Info, error)
+	Endpoints() (*models.Endpoints, error)
+	AuthDevice(req *models.DeviceAuthRequest) (*models.DeviceAuthResponse, error)
+	AuthPublicKey(req *models.PublicKeyAuthRequest, token string) (*models.PublicKeyAuthResponse, error)
+	NewReverseListener(ctx context.Context, token string, connPath string) (*revdial.Listener, error)
+}
+
+//go:generate mockery --name=Client --filename=client.go
+type Client interface {
+	commonAPI
+	publicAPI
 }
 
 type client struct {
@@ -64,42 +39,55 @@ type client struct {
 	host   string
 	port   int
 	http   *resty.Client
-	logger *logrus.Logger
+	logger *log.Logger
+	// reverser is used to create a reverse listener to Agent from ShellHub's SSH server.
+	reverser IReverser
 }
 
-func (c *client) ListDevices() ([]models.Device, error) {
-	list := []models.Device{}
-	_, err := c.http.R().
-		SetResult(&list).
-		Get(buildURL(c, "/api/devices"))
+var ErrParseAddress = fmt.Errorf("could not parse the address to the required format")
+
+// NewClient creates a new ShellHub HTTP client.
+//
+// Server address must contain the scheme, the host and the port. For instance: `https://cloud.shellhub.io:443/`.
+func NewClient(address string, opts ...Opt) (Client, error) {
+	uri, err := url.ParseRequestURI(address)
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(ErrParseAddress, err)
 	}
 
-	return list, nil
-}
+	client := new(client)
+	client.http = resty.New()
+	client.http.SetRetryCount(math.MaxInt32)
+	client.http.SetRedirectPolicy(SameDomainRedirectPolicy())
+	client.http.SetBaseURL(uri.String())
+	client.http.AddRetryCondition(func(r *resty.Response, err error) bool {
+		if _, ok := err.(net.Error); ok {
+			return true
+		}
 
-func (c *client) GetDevice(uid string) (*models.Device, error) {
-	var device *models.Device
-	resp, err := c.http.R().
-		SetResult(&device).
-		Get(buildURL(c, fmt.Sprintf("/api/devices/%s", uid)))
-	if err != nil {
-		return nil, ErrConnectionFailed
+		if r.StatusCode() >= http.StatusInternalServerError && r.StatusCode() != http.StatusNotImplemented {
+			log.WithFields(log.Fields{
+				"status_code": r.StatusCode(),
+				"url":         r.Request.URL,
+			}).Warn("failed to achieve the server")
+
+			return true
+		}
+
+		return false
+	})
+
+	if client.logger != nil {
+		client.http.SetLogger(&LeveledLogger{client.logger})
 	}
 
-	switch resp.StatusCode() {
-	case 400:
-		return nil, ErrNotFound
-	case 200:
-		return device, nil
-	default:
-		return nil, ErrUnknown
+	client.reverser = NewReverser(client.http.BaseURL)
+
+	for _, opt := range opts {
+		if err := opt(client); err != nil {
+			return nil, err
+		}
 	}
-}
 
-func buildURL(c *client, uri string) string {
-	u, _ := url.Parse(fmt.Sprintf("%s://%s:%d%s", c.scheme, c.host, c.port, uri))
-
-	return u.String()
+	return client, nil
 }

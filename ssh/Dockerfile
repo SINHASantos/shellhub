@@ -1,5 +1,5 @@
 # base stage
-FROM golang:1.20.4-alpine3.16 AS base
+FROM golang:1.22.6-alpine3.19 AS base
 
 ARG GOPROXY
 
@@ -40,8 +40,9 @@ ARG GOPROXY
 ENV GOPROXY ${GOPROXY}
 
 RUN apk add --update openssl
-RUN go install github.com/markbates/refresh@v1.11.1 && \
-    go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.53.3 && \
+RUN go install github.com/air-verse/air@v1.52.3 && \
+    go install github.com/go-delve/delve/cmd/dlv@v1.23.0 && \
+    go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.63.2 && \
     go install github.com/vektra/mockery/v2/...@v2.20.0
 
 WORKDIR $GOPATH/src/github.com/shellhub-io/shellhub
@@ -55,7 +56,7 @@ WORKDIR $GOPATH/src/github.com/shellhub-io/shellhub/ssh
 ENTRYPOINT ["/entrypoint.sh"]
 
 # production stage
-FROM alpine:3.18.3 AS production
+FROM alpine:3.21.2 AS production
 
 RUN apk add curl
 

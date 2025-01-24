@@ -16,9 +16,7 @@ type SSHKeysTagsService interface {
 //
 // It checks if the models.Namespace and models.PublicKey exists and try to perform the addition action.
 func (s *service) AddPublicKeyTag(ctx context.Context, tenant, fingerprint, tag string) error {
-	// Checks if the namespace exists.
-	namespace, err := s.store.NamespaceGet(ctx, tenant)
-	if err != nil || namespace == nil {
+	if _, err := s.store.NamespaceGet(ctx, tenant); err != nil {
 		return NewErrNamespaceNotFound(tenant, err)
 	}
 
@@ -46,7 +44,7 @@ func (s *service) AddPublicKeyTag(ctx context.Context, tenant, fingerprint, tag 
 	}
 
 	// Trys to add a public key.
-	err = s.store.PublicKeyAddTag(ctx, tenant, fingerprint, tag)
+	err = s.store.PublicKeyPushTag(ctx, tenant, fingerprint, tag)
 	if err != nil {
 		switch err {
 		case store.ErrNoDocuments:
@@ -61,9 +59,7 @@ func (s *service) AddPublicKeyTag(ctx context.Context, tenant, fingerprint, tag 
 
 // RemovePublicKeyTag trys to remove a tag from the models.PublicKey, when its filter is from Tags type.
 func (s *service) RemovePublicKeyTag(ctx context.Context, tenant, fingerprint, tag string) error {
-	// Checks if the namespace exists.
-	namespace, err := s.store.NamespaceGet(ctx, tenant)
-	if err != nil || namespace == nil {
+	if _, err := s.store.NamespaceGet(ctx, tenant); err != nil {
 		return NewErrNamespaceNotFound(tenant, nil)
 	}
 
@@ -83,7 +79,7 @@ func (s *service) RemovePublicKeyTag(ctx context.Context, tenant, fingerprint, t
 	}
 
 	// Trys to remove a public key.
-	err = s.store.PublicKeyRemoveTag(ctx, tenant, fingerprint, tag)
+	err = s.store.PublicKeyPullTag(ctx, tenant, fingerprint, tag)
 	if err != nil {
 		return err
 	}
@@ -95,6 +91,10 @@ func (s *service) RemovePublicKeyTag(ctx context.Context, tenant, fingerprint, t
 //
 // It checks if the models.Namespace and models.PublicKey exists and try to perform the update action.
 func (s *service) UpdatePublicKeyTags(ctx context.Context, tenant, fingerprint string, tags []string) error {
+	if len(tags) > DeviceMaxTags {
+		return NewErrTagLimit(DeviceMaxTags, nil)
+	}
+
 	set := func(list []string) []string {
 		state := make(map[string]bool)
 		helper := make([]string, 0)
@@ -108,13 +108,12 @@ func (s *service) UpdatePublicKeyTags(ctx context.Context, tenant, fingerprint s
 		return helper
 	}
 
-	// Checks if the namespace exists.
-	namespace, err := s.store.NamespaceGet(ctx, tenant)
-	if err != nil || namespace == nil {
+	tags = set(tags)
+
+	if _, err := s.store.NamespaceGet(ctx, tenant); err != nil {
 		return NewErrNamespaceNotFound(tenant, nil)
 	}
 
-	// Checks if the public key exists.
 	key, err := s.store.PublicKeyGet(ctx, fingerprint, tenant)
 	if err != nil || key == nil {
 		return NewErrPublicKeyNotFound(fingerprint, err)
@@ -123,12 +122,6 @@ func (s *service) UpdatePublicKeyTags(ctx context.Context, tenant, fingerprint s
 	if key.Filter.Hostname != "" {
 		return NewErrPublicKeyNotFound(fingerprint, nil)
 	}
-
-	if len(tags) > DeviceMaxTags {
-		return NewErrTagLimit(DeviceMaxTags, nil)
-	}
-
-	tags = set(tags)
 
 	allTags, _, err := s.store.TagsGet(ctx, tenant)
 	if err != nil {
@@ -141,15 +134,8 @@ func (s *service) UpdatePublicKeyTags(ctx context.Context, tenant, fingerprint s
 		}
 	}
 
-	// Trys to add a public key.
-	err = s.store.PublicKeyUpdateTags(ctx, tenant, fingerprint, tags)
-	if err != nil {
-		switch err {
-		case store.ErrNoDocuments:
-			return ErrDuplicateTagName
-		default:
-			return err
-		}
+	if _, _, err := s.store.PublicKeySetTags(ctx, tenant, fingerprint, tags); err != nil {
+		return err
 	}
 
 	return nil

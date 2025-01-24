@@ -1,26 +1,15 @@
 package server
 
 import (
-	"crypto"
-	"crypto/rsa"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/json"
-	"fmt"
-	"io"
 	"net"
-	"os"
 	"os/exec"
-	"os/user"
 	"sync"
 	"time"
 
 	gliderssh "github.com/gliderlabs/ssh"
-	"github.com/shellhub-io/shellhub/pkg/agent/pkg/osauth"
-	"github.com/shellhub-io/shellhub/pkg/agent/server/command"
-	"github.com/shellhub-io/shellhub/pkg/agent/server/utmp"
+	"github.com/shellhub-io/shellhub/pkg/agent/server/modes"
+	"github.com/shellhub-io/shellhub/pkg/agent/server/modes/host"
 	"github.com/shellhub-io/shellhub/pkg/api/client"
-	"github.com/shellhub-io/shellhub/pkg/models"
 	log "github.com/sirupsen/logrus"
 	gossh "golang.org/x/crypto/ssh"
 )
@@ -46,26 +35,80 @@ func (c *sshConn) Close() error {
 }
 
 type Server struct {
-	sshd               *gliderssh.Server
-	api                client.Client
-	authData           *models.DeviceAuthResponse
-	cmds               map[string]*exec.Cmd
-	Sessions           map[string]net.Conn
-	deviceName         string
-	mu                 sync.Mutex
-	keepAliveInterval  int
-	singleUserPassword string
+	sshd              *gliderssh.Server
+	api               client.Client
+	cmds              map[string]*exec.Cmd
+	deviceName        string
+	ContainerID       string
+	mu                sync.Mutex
+	keepAliveInterval uint32
+
+	// mode is the mode of the server, identifing where and how the SSH's server is running.
+	//
+	// For example, the [modes.HostMode] means that the SSH's server runs in the host machine, using the host
+	// `/etc/passwd`, `/etc/shadow`, redirecting the SSH's connection to the device sdin, stdout and stderr and etc.
+	//
+	// Check the [modes] package for more information.
+	mode     modes.Mode
+	Sessions sync.Map
+}
+
+// SSH channels supported by the SSH server.
+//
+// An SSH channel refers to a communication link established between a client and a server. SSH channels are multiplexed
+// over a single encrypted connection, facilitating concurrent and secure communication for various purposes.
+//
+// SSH_MSG_CHANNEL_OPEN
+//
+// Check www.ietf.org/rfc/rfc4254.txt for more information.
+const (
+	// ChannelSession refers to a type of SSH channel that is established between a client and a server for interactive
+	// shell sessions or command execution. SSH channels are used to multiplex multiple logical communication channels
+	// over a single SSH connection.
+	//
+	// Check www.ietf.org/rfc/rfc4254.txt at section 6.1 for more information.
+	ChannelSession string = "session"
+	// ChannelDirectTcpip is the channel type in SSH is used to establish a direct TCP/IP connection between the SSH
+	// client and a target host through the SSH server. This channel type allows the client to initiate a connection to
+	// a specific destination host and port, and the SSH server acts as a bridge to facilitate this connection.
+	//
+	// Check www.ietf.org/rfc/rfc4254.txt at section 7.2 for more information.
+	ChannelDirectTcpip string = "direct-tcpip"
+)
+
+type Feature uint
+
+const (
+	// NoFeature no features enable.
+	NoFeature Feature = 0
+	// LocalPortForwardFeature enable local port forward feature.
+	LocalPortForwardFeature Feature = iota << 1
+	// ReversePortForwardFeature enable reverse port forward feature.
+	ReversePortForwardFeature
+)
+
+// Config stores configuration needs for the SSH server.
+type Config struct {
+	// PrivateKey is the path for the SSH server private key.
+	PrivateKey string
+	// KeepAliveInterval stores the time between each SSH keep alive request.
+	KeepAliveInterval uint32
+	// Features list of featues on SSH server.
+	Features Feature
 }
 
 // NewServer creates a new server SSH agent server.
-func NewServer(api client.Client, authData *models.DeviceAuthResponse, privateKey string, keepAliveInterval int, singleUserPassword string) *Server {
+func NewServer(api client.Client, mode modes.Mode, cfg *Config) *Server {
 	server := &Server{
-		api:                api,
-		authData:           authData,
-		cmds:               make(map[string]*exec.Cmd),
-		Sessions:           make(map[string]net.Conn),
-		keepAliveInterval:  keepAliveInterval,
-		singleUserPassword: singleUserPassword,
+		api:               api,
+		mode:              mode,
+		cmds:              make(map[string]*exec.Cmd),
+		keepAliveInterval: cfg.KeepAliveInterval,
+		Sessions:          sync.Map{},
+	}
+
+	if m, ok := mode.(*host.Mode); ok {
+		m.Sessioner.SetCmds(server.cmds)
 	}
 
 	server.sshd = &gliderssh.Server{
@@ -73,7 +116,6 @@ func NewServer(api client.Client, authData *models.DeviceAuthResponse, privateKe
 		PublicKeyHandler:       server.publicKeyHandler,
 		Handler:                server.sessionHandler,
 		SessionRequestCallback: server.sessionRequestCallback,
-		RequestHandlers:        gliderssh.DefaultRequestHandlers,
 		SubsystemHandlers: map[string]gliderssh.SubsystemHandler{
 			SFTPSubsystemName: server.sftpSubsystemHandler,
 		},
@@ -90,20 +132,19 @@ func NewServer(api client.Client, authData *models.DeviceAuthResponse, privateKe
 
 			return &sshConn{conn, closeCallback, ctx}
 		},
-		LocalPortForwardingCallback: func(ctx gliderssh.Context, destinationHost string, destinationPort uint32) bool {
-			return true
+		LocalPortForwardingCallback: func(_ gliderssh.Context, _ string, _ uint32) bool {
+			return cfg.Features&LocalPortForwardFeature > 0
 		},
-		ReversePortForwardingCallback: func(ctx gliderssh.Context, destinationHost string, destinationPort uint32) bool {
-			return false
+		ReversePortForwardingCallback: func(_ gliderssh.Context, _ string, _ uint32) bool {
+			return cfg.Features&ReversePortForwardFeature > 0
 		},
 		ChannelHandlers: map[string]gliderssh.ChannelHandler{
-			"session":       gliderssh.DefaultSessionHandler,
-			"direct-tcpip":  gliderssh.DirectTCPIPHandler,
-			"dynamic-tcpip": gliderssh.DirectTCPIPHandler,
+			ChannelSession:     gliderssh.DefaultSessionHandler,
+			ChannelDirectTcpip: gliderssh.DirectTCPIPHandler,
 		},
 	}
 
-	err := server.sshd.SetOption(gliderssh.HostKeyFile(privateKey))
+	err := server.sshd.SetOption(gliderssh.HostKeyFile(cfg.PrivateKey))
 	if err != nil {
 		log.Warn(err)
 	}
@@ -140,411 +181,32 @@ loop:
 	}
 }
 
-func (s *Server) sessionHandler(session gliderssh.Session) {
-	sspty, winCh, isPty := session.Pty()
-
-	log.Info("New session request")
-
-	go s.startKeepAliveLoop(session)
-	requestType := session.Context().Value("request_type").(string) //nolint:forcetypeassert
-
-	switch {
-	case isPty:
-		scmd := newShellCmd(s, session.User(), sspty.Term)
-
-		pts, err := startPty(scmd, session, winCh)
-		if err != nil {
-			log.Warn(err)
-		}
-
-		u := osauth.LookupUser(session.User())
-
-		err = os.Chown(pts.Name(), int(u.UID), -1)
-		if err != nil {
-			log.Warn(err)
-		}
-
-		remoteAddr := session.RemoteAddr()
-
-		log.WithFields(log.Fields{
-			"user":       session.User(),
-			"pty":        pts.Name(),
-			"ispty":      isPty,
-			"remoteaddr": remoteAddr,
-			"localaddr":  session.LocalAddr(),
-		}).Info("Session started")
-
-		ut := utmp.UtmpStartSession(
-			pts.Name(),
-			session.User(),
-			remoteAddr.String(),
-		)
-
-		s.mu.Lock()
-		s.cmds[session.Context().Value(gliderssh.ContextKeySessionID).(string)] = scmd
-		s.mu.Unlock()
-
-		if err := scmd.Wait(); err != nil {
-			log.Warn(err)
-		}
-
-		log.WithFields(log.Fields{
-			"user":       session.User(),
-			"pty":        pts.Name(),
-			"remoteaddr": remoteAddr,
-			"localaddr":  session.LocalAddr(),
-		}).Info("Session ended")
-
-		utmp.UtmpEndSession(ut)
-	case !isPty && requestType == "shell":
-		cmd := newShellCmd(s, session.User(), "")
-
-		stdout, _ := cmd.StdoutPipe()
-		stdin, _ := cmd.StdinPipe()
-		stderr, _ := cmd.StderrPipe()
-
-		serverConn, ok := session.Context().Value(gliderssh.ContextKeyConn).(*gossh.ServerConn)
-		if !ok {
-			return
-		}
-
-		go func() {
-			serverConn.Wait()  // nolint:errcheck
-			cmd.Process.Kill() // nolint:errcheck
-		}()
-
-		log.WithFields(log.Fields{
-			"user":        session.User(),
-			"ispty":       isPty,
-			"remoteaddr":  session.RemoteAddr(),
-			"localaddr":   session.LocalAddr(),
-			"Raw command": session.RawCommand(),
-		}).Info("Command started")
-
-		err := cmd.Start()
-		if err != nil {
-			log.Warn(err)
-		}
-
-		go func() {
-			if _, err := io.Copy(stdin, session); err != nil {
-				fmt.Println(err) //nolint:forbidigo
-			}
-
-			stdin.Close()
-		}()
-
-		go func() {
-			combinedOutput := io.MultiReader(stdout, stderr)
-			if _, err := io.Copy(session, combinedOutput); err != nil {
-				fmt.Println(err) //nolint:forbidigo
-			}
-		}()
-
-		err = cmd.Wait()
-		if err != nil {
-			log.Warn(err)
-		}
-
-		session.Exit(cmd.ProcessState.ExitCode()) //nolint:errcheck
-
-		log.WithFields(log.Fields{
-			"user":        session.User(),
-			"remoteaddr":  session.RemoteAddr(),
-			"localaddr":   session.LocalAddr(),
-			"Raw command": session.RawCommand(),
-		}).Info("Command ended")
-	default:
-		u := osauth.LookupUser(session.User())
-		if len(session.Command()) == 0 {
-			log.WithFields(log.Fields{
-				"user":      session.User(),
-				"localaddr": session.LocalAddr(),
-			}).Error("None command was received")
-
-			log.Info("Session ended")
-			_ = session.Exit(1)
-
-			return
-		}
-
-		cmd := command.NewCmd(u, "", "", s.deviceName, session.Command()...)
-
-		stdout, _ := cmd.StdoutPipe()
-		stdin, _ := cmd.StdinPipe()
-		stderr, _ := cmd.StderrPipe()
-
-		serverConn, ok := session.Context().Value(gliderssh.ContextKeyConn).(*gossh.ServerConn)
-		if !ok {
-			return
-		}
-
-		log.WithFields(log.Fields{
-			"user":        session.User(),
-			"remoteaddr":  session.RemoteAddr(),
-			"localaddr":   session.LocalAddr(),
-			"Raw command": session.RawCommand(),
-		}).Info("Command started")
-
-		err := cmd.Start()
-		if err != nil {
-			log.Warn(err)
-		}
-
-		go func() {
-			serverConn.Wait()  // nolint:errcheck
-			cmd.Process.Kill() // nolint:errcheck
-		}()
-
-		go func() {
-			if _, err := io.Copy(stdin, session); err != nil {
-				fmt.Println(err) //nolint:forbidigo
-			}
-
-			stdin.Close()
-		}()
-
-		wg := &sync.WaitGroup{}
-		wg.Add(1)
-
-		go func() {
-			combinedOutput := io.MultiReader(stdout, stderr)
-			if _, err := io.Copy(session, combinedOutput); err != nil {
-				fmt.Println(err) //nolint:forbidigo
-			}
-
-			wg.Done()
-		}()
-
-		wg.Wait()
-
-		err = cmd.Wait()
-		if err != nil {
-			log.Warn(err)
-		}
-
-		session.Exit(cmd.ProcessState.ExitCode()) //nolint:errcheck
-
-		log.WithFields(log.Fields{
-			"user":        session.User(),
-			"remoteaddr":  session.RemoteAddr(),
-			"localaddr":   session.LocalAddr(),
-			"Raw command": session.RawCommand(),
-		}).Info("Command ended")
-	}
-}
-
-func (s *Server) passwordHandler(ctx gliderssh.Context, pass string) bool {
-	log := log.WithFields(log.Fields{
-		"user": ctx.User(),
-	})
-	var ok bool
-
-	if s.singleUserPassword == "" {
-		ok = osauth.AuthUser(ctx.User(), pass)
-	} else {
-		ok = osauth.VerifyPasswordHash(s.singleUserPassword, pass)
-	}
-
-	if ok {
-		log.Info("Accepted password")
-	} else {
-		log.Info("Failed password")
-	}
-
-	return ok
-}
-
-func (s *Server) publicKeyHandler(ctx gliderssh.Context, key gliderssh.PublicKey) bool {
-	if osauth.LookupUser(ctx.User()) == nil {
-		return false
-	}
-
-	type Signature struct {
-		Username  string
-		Namespace string
-	}
-
-	sig := &Signature{
-		Username:  ctx.User(),
-		Namespace: s.deviceName,
-	}
-
-	sigBytes, err := json.Marshal(sig)
-	if err != nil {
-		return false
-	}
-
-	sigHash := sha256.Sum256(sigBytes)
-
-	res, err := s.api.AuthPublicKey(&models.PublicKeyAuthRequest{
-		Fingerprint: gossh.FingerprintLegacyMD5(key),
-		Data:        string(sigBytes),
-	}, s.authData.Token)
-	if err != nil {
-		return false
-	}
-
-	digest, err := base64.StdEncoding.DecodeString(res.Signature)
-	if err != nil {
-		return false
-	}
-
-	cryptoKey, ok := key.(gossh.CryptoPublicKey)
-	if !ok {
-		return false
-	}
-
-	pubCrypto := cryptoKey.CryptoPublicKey()
-
-	pubKey, ok := pubCrypto.(*rsa.PublicKey)
-	if !ok {
-		return false
-	}
-
-	if err = rsa.VerifyPKCS1v15(pubKey, crypto.SHA256, sigHash[:], digest); err != nil {
-		return false
-	}
-
-	return true
-}
+// List of request types that are supported by SSH.
+//
+// Once the session has been set up, a program is started at the remote end.  The program can be a shell, an application
+// program, or a subsystem with a host-independent name.  Only one of these requests can succeed per channel.
+//
+// Check www.ietf.org/rfc/rfc4254.txt at section 6.5 for more information.
+const (
+	// RequestTypeShell is the request type for shell.
+	RequestTypeShell = "shell"
+	// RequestTypeExec is the request type for exec.
+	RequestTypeExec = "exec"
+	// RequestTypeSubsystem is the request type for any subsystem.
+	RequestTypeSubsystem = "subsystem"
+	// RequestTypeUnknown is the request type for unknown.
+	//
+	// It is not a valid request type documentated by SSH's RFC, but it can be useful to identify the request type when
+	// it is not known.
+	RequestTypeUnknown = "unknown"
+)
 
 func (s *Server) sessionRequestCallback(session gliderssh.Session, requestType string) bool {
 	session.Context().SetValue("request_type", requestType)
 
-	return true
-}
-
-// sftpSubsystemHandler handles the SFTP subsystem session.
-func (s *Server) sftpSubsystemHandler(session gliderssh.Session) {
-	log.WithFields(log.Fields{
-		"user": session.Context().User(),
-	}).Info("SFTP session started")
-	defer session.Close()
-
-	cmd := exec.Command("/proc/self/exe", []string{"sftp"}...)
-
-	looked, err := user.Lookup(session.User())
-	if err != nil {
-		log.WithError(err).WithFields(log.Fields{
-			"user": session.Context().User(),
-		}).Error("Failed to lookup user")
-
-		return
-	}
-
-	home := fmt.Sprintf("HOME=%s", looked.HomeDir)
-	gid := fmt.Sprintf("GID=%s", looked.Gid)
-	uid := fmt.Sprintf("UID=%s", looked.Uid)
-
-	cmd.Env = append(cmd.Env, home)
-	cmd.Env = append(cmd.Env, gid)
-	cmd.Env = append(cmd.Env, uid)
-
-	input, err := cmd.StdinPipe()
-	if err != nil {
-		log.WithError(err).WithFields(log.Fields{
-			"user": session.Context().User(),
-		}).Error("Failed to get stdin pipe")
-
-		return
-	}
-
-	output, err := cmd.StdoutPipe()
-	if err != nil {
-		log.WithError(err).WithFields(log.Fields{
-			"user": session.Context().User(),
-		}).Error("Failed to get stdout pipe")
-
-		return
-	}
-
-	erro, err := cmd.StderrPipe()
-	if err != nil {
-		log.WithError(err).WithFields(log.Fields{
-			"user": session.Context().User(),
-		}).Error("Failed to get stderr pipe")
-
-		return
-	}
-
-	if err := cmd.Start(); err != nil {
-		log.WithError(err).WithFields(log.Fields{
-			"user": session.Context().User(),
-		}).Error("Failed to start command")
-
-		return
-	}
-
-	go func() {
-		log.WithFields(log.Fields{
-			"user": session.Context().User(),
-		}).Trace("copying input to session")
-
-		if _, err := io.Copy(input, session); err != nil && err != io.EOF {
-			log.WithError(err).WithFields(log.Fields{
-				"user": session.Context().User(),
-			}).Error("Failed to copy stdin to command")
-
-			return
-		}
-
-		log.WithFields(log.Fields{
-			"user": session.Context().User(),
-		}).Trace("closing input to session ends")
-
-		input.Close()
-	}()
-
-	go func() {
-		log.WithFields(log.Fields{
-			"user": session.Context().User(),
-		}).Trace("copying output to session")
-
-		if _, err := io.Copy(session, output); err != nil {
-			log.WithError(err).WithFields(log.Fields{
-				"user": session.Context().User(),
-			}).Error("Failed to copy stdout to session")
-
-			return
-		}
-
-		log.WithFields(log.Fields{
-			"user": session.Context().User(),
-		}).Trace("closing output to session ends")
-	}()
-
-	go func() {
-		log.WithFields(log.Fields{
-			"user": session.Context().User(),
-		}).Trace("copying error to session")
-
-		if _, err := io.Copy(session, erro); err != nil {
-			log.WithError(err).WithFields(log.Fields{
-				"user": session.Context().User(),
-			}).Error("Failed to copy stderr to session")
-
-			return
-		}
-
-		log.WithFields(log.Fields{
-			"user": session.Context().User(),
-		}).Trace("closing error to session ends")
-	}()
-
 	go s.startKeepAliveLoop(session)
 
-	if err = cmd.Wait(); err != nil {
-		log.WithError(err).WithFields(log.Fields{
-			"user": session.Context().User(),
-		}).Error("Failed to wait command")
-
-		return
-	}
-
-	log.WithFields(log.Fields{
-		"user": session.Context().User(),
-	}).Info("SFTP session closed")
+	return true
 }
 
 func (s *Server) HandleConn(conn net.Conn) {
@@ -555,31 +217,17 @@ func (s *Server) SetDeviceName(name string) {
 	s.deviceName = name
 }
 
+func (s *Server) SetContainerID(id string) {
+	s.ContainerID = id
+}
+
 func (s *Server) CloseSession(id string) {
-	if session, ok := s.Sessions[id]; ok {
-		session.Close()
-		delete(s.Sessions, id)
+	if session, ok := s.Sessions.Load(id); ok {
+		session.(net.Conn).Close()
+		s.Sessions.Delete(id)
 	}
 }
 
 func (s *Server) ListenAndServe() error {
 	return s.sshd.ListenAndServe()
-}
-
-func newShellCmd(s *Server, username, term string) *exec.Cmd {
-	shell := os.Getenv("SHELL")
-
-	user := osauth.LookupUser(username)
-
-	if shell == "" {
-		shell = user.Shell
-	}
-
-	if term == "" {
-		term = "xterm"
-	}
-
-	cmd := command.NewCmd(user, shell, term, s.deviceName, shell, "--login")
-
-	return cmd
 }

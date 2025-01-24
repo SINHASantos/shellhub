@@ -12,6 +12,7 @@ export interface NamespacesState {
   invoicesLength: number;
   numberNamespaces: number;
   owner: boolean;
+  userStatus: string;
 }
 
 export const namespaces: Module<NamespacesState, State> = {
@@ -24,6 +25,7 @@ export const namespaces: Module<NamespacesState, State> = {
     invoicesLength: 0,
     numberNamespaces: 0,
     owner: false,
+    userStatus: "",
   },
 
   getters: {
@@ -32,6 +34,7 @@ export const namespaces: Module<NamespacesState, State> = {
     getNumberNamespaces: (state) => state.numberNamespaces,
     owner: (state) => state.owner,
     billing: (state) => state.billing,
+    getUserStatus: (state) => state.userStatus,
   },
 
   mutations: {
@@ -46,6 +49,10 @@ export const namespaces: Module<NamespacesState, State> = {
 
     setBilling: (state, data) => {
       state.billing = data;
+    },
+
+    setUserStatus: (state, status) => {
+      state.userStatus = status;
     },
 
     removeNamespace: (state, id) => {
@@ -114,7 +121,8 @@ export const namespaces: Module<NamespacesState, State> = {
 
     put: async (context, data) => {
       try {
-        await apiNamespace.putNamespace(data);
+        const res = await apiNamespace.putNamespace(data);
+        context.commit("setNamespace", res);
       } catch (error) {
         console.error(error);
         throw error;
@@ -127,6 +135,22 @@ export const namespaces: Module<NamespacesState, State> = {
         context.commit("removeNamespace", id);
         context.commit("clearObjectNamespace");
         context.commit("clearNamespaceList");
+      } catch (error) {
+        console.error(error);
+        throw error;
+      }
+    },
+
+    leave: async (context, tenant) => {
+      try {
+        const res = await apiNamespace.leaveNamespace(tenant);
+
+        localStorage.setItem("token", res.data.token || "");
+
+        if (res.data.tenant) {
+          localStorage.setItem("tenant", res.data.tenant || "");
+          localStorage.setItem("role", res.data.role || "");
+        }
       } catch (error) {
         console.error(error);
         throw error;
@@ -154,6 +178,25 @@ export const namespaces: Module<NamespacesState, State> = {
     removeUser: async (context, data) => {
       try {
         await apiNamespace.removeUserFromNamespace(data);
+      } catch (error) {
+        console.error(error);
+        throw error;
+      }
+    },
+
+    acceptInvite: async (context, data) => {
+      try {
+        await apiNamespace.acceptNamespaceInvite(data);
+      } catch (error) {
+        console.error(error);
+        throw error;
+      }
+    },
+
+    lookupUserStatus: async (context, data) => {
+      try {
+        const res = await apiNamespace.lookupUserStatus(data);
+        context.commit("setUserStatus", res.data.status);
       } catch (error) {
         console.error(error);
         throw error;

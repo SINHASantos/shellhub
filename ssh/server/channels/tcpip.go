@@ -4,85 +4,173 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"sync"
 
 	gliderssh "github.com/gliderlabs/ssh"
-	"github.com/shellhub-io/shellhub/ssh/pkg/metadata"
+	"github.com/shellhub-io/shellhub/ssh/session"
+	log "github.com/sirupsen/logrus"
 	gossh "golang.org/x/crypto/ssh"
 )
 
-const (
-	// DirectTCPIPChannel is the channel type for direct-tcpip channels.
-	// It is used for local port forwarding.
-	// e.g. `ssh -L 8080:localhost:80 user@sshid`.
-	DirectTCPIPChannel = "direct-tcpip"
-	// DynamicTCPIPChannel is the channel type for dynamic-tcpip channels.
-	// It is used for dynamic port forwarding.
-	// e.g. `ssh -D 1080 user@sshid`.
-	DynamicTCPIPChannel = "dynamic-tcpip"
-)
+// DefaultDirectTCPIPHandler is the channel's handler for direct-tcpip channels like "local port forwarding" and "dynamic
+// application-level port forwarding".
+func DefaultDirectTCPIPHandler(server *gliderssh.Server, conn *gossh.ServerConn, newChan gossh.NewChannel, ctx gliderssh.Context) {
+	sess, _ := session.ObtainSession(ctx)
+	go func() {
+		// NOTICE: As [gossh.ServerConn] is shared by all channels calls, close it after a channel close block any
+		// other channel involkation. To avoid it, we wait for the connection be closed to finish the sesison.
+		conn.Wait() //nolint:errcheck
 
-// DefaultTCPIPHandler is the default handler for DirectTCPIPChannel and DynamicTCPIPChannel channels.
-//
-// It will reject the channel if the LocalPortForwardingCallback is not set or returns false.
-// Otherwise, it will dial the agent and proxy the channel.
-func DefaultTCPIPHandler(server *gliderssh.Server, _ *gossh.ServerConn, newChan gossh.NewChannel, ctx gliderssh.Context) {
+		sess.Finish() //nolint:errcheck
+	}()
+
+	log.WithFields(log.Fields{
+		"username": sess.Target.Username,
+		"sshid":    sess.Target.Data,
+	}).Trace("handling direct-tcpip channel")
+
 	type channelData struct {
-		DestAddr   string
-		DestPort   uint32
-		OriginAddr string
-		OriginPort uint32
+		DestAddr   string `json:"dest_addr"`
+		DestPort   uint32 `json:"dest_port"`
+		OriginAddr string `json:"origin_addr"`
+		OriginPort uint32 `json:"origin_port"`
 	}
 
-	data := channelData{}
-	if err := gossh.Unmarshal(newChan.ExtraData(), &data); err != nil {
-		newChan.Reject(gossh.ConnectionFailed, "error parsing forward data: "+err.Error()) //nolint:errcheck
+	data := new(channelData)
+	if err := gossh.Unmarshal(newChan.ExtraData(), data); err != nil {
+		newChan.Reject(gossh.ConnectionFailed, "failed to parse forward data: "+err.Error()) //nolint:errcheck
+		log.WithError(err).WithFields(log.Fields{
+			"username":    sess.Target.Username,
+			"sshid":       sess.Target.Data,
+			"origin_port": data.OriginAddr,
+			"origin_addr": data.OriginPort,
+			"dest_port":   data.DestPort,
+			"dest_addr":   data.DestAddr,
+		}).Error("failed to parse forward data")
 
 		return
 	}
 
 	if server.LocalPortForwardingCallback == nil || !server.LocalPortForwardingCallback(ctx, data.DestAddr, data.DestPort) {
 		newChan.Reject(gossh.Prohibited, "port forwarding is disabled") //nolint:errcheck
+		log.WithFields(log.Fields{
+			"username":    sess.Target.Username,
+			"sshid":       sess.Target.Data,
+			"origin_port": data.OriginAddr,
+			"origin_addr": data.OriginPort,
+			"dest_port":   data.DestPort,
+			"dest_addr":   data.DestAddr,
+		}).Info("port forwarding is disabled")
 
 		return
 	}
 
-	if !metadata.RestoreEstablished(ctx) {
-		newChan.Reject(gossh.Prohibited, "connection between server and agent is not established yet") //nolint:errcheck
-
-		return
-	}
+	sess.Event(DirectTCPIPChannel, data) //nolint:errcheck
 
 	dest := net.JoinHostPort(data.DestAddr, strconv.FormatInt(int64(data.DestPort), 10))
 
-	agent := metadata.RestoreAgent(ctx)
-	if agent == nil {
-		newChan.Reject(gossh.ConnectionFailed, "error restoring the agent") //nolint:errcheck
+	// NOTE: Certain SSH connections may not necessitate a dedicated handler, such as an SSH handler.
+	// In such instances, a new connection to the agent is generated and saved in the metadata for
+	// subsequent use.
+	// An illustrative scenario is when the SSH connection is initiated with the "-N" flag.
+	connection := sess.AgentClient
 
-		return
-	}
-
-	dialed, err := agent.Dial("tcp", dest)
+	agent, err := connection.Dial("tcp", dest)
 	if err != nil {
-		newChan.Reject(gossh.ConnectionFailed, "error dialing the agent to host and port: "+err.Error()) //nolint:errcheck
+		newChan.Reject(gossh.ConnectionFailed, "failed dialing the agent to host and port: "+err.Error()) //nolint:errcheck
+		log.WithError(err).WithFields(log.Fields{
+			"username":    sess.Target.Username,
+			"sshid":       sess.Target.Data,
+			"origin_port": data.OriginAddr,
+			"origin_addr": data.OriginPort,
+			"dest_port":   data.DestPort,
+			"dest_addr":   data.DestAddr,
+		}).Error("failed dialing the agent to host and port")
 
 		return
 	}
 
-	channel, reqs, err := newChan.Accept()
+	defer agent.Close()
+
+	client, reqs, err := newChan.Accept()
 	if err != nil {
-		newChan.Reject(gossh.ConnectionFailed, "error accepting the channel: "+err.Error()) //nolint:errcheck
+		newChan.Reject(gossh.ConnectionFailed, "failed accepting the channel: "+err.Error()) //nolint:errcheck
+		log.WithError(err).WithFields(log.Fields{
+			"username":    sess.Target.Username,
+			"sshid":       sess.Target.Data,
+			"origin_port": data.OriginAddr,
+			"origin_addr": data.OriginPort,
+			"dest_port":   data.DestPort,
+			"dest_addr":   data.DestAddr,
+		}).Error("failed accepting the channel")
 
 		return
 	}
+
+	defer client.Close()
 
 	go gossh.DiscardRequests(reqs)
 
+	log.WithFields(log.Fields{
+		"username":    sess.Target.Username,
+		"sshid":       sess.Target.Data,
+		"origin_port": data.OriginAddr,
+		"origin_addr": data.OriginPort,
+		"dest_port":   data.DestPort,
+		"dest_addr":   data.DestAddr,
+	}).Info("piping data between client and agent")
+
+	wg := new(sync.WaitGroup)
+
+	// TODO: control the running state of these goroutines.
+	wg.Add(1)
 	go func() {
-		defer channel.Close()
-		io.Copy(channel, dialed) //nolint:errcheck
+		defer wg.Done()
+
+		log.WithFields(log.Fields{
+			"username":    sess.Target.Username,
+			"sshid":       sess.Target.Data,
+			"origin_port": data.OriginAddr,
+			"origin_addr": data.OriginPort,
+			"dest_port":   data.DestPort,
+			"dest_addr":   data.DestAddr,
+		}).Trace("copying data from client to agent")
+
+		if _, err := io.Copy(client, agent); err != nil && err != io.EOF {
+			log.WithError(err).Error("failed to copy data from agent to client")
+
+			return
+		}
 	}()
+
+	wg.Add(1)
 	go func() {
-		defer channel.Close()
-		io.Copy(dialed, channel) //nolint:errcheck
+		defer wg.Done()
+
+		log.WithFields(log.Fields{
+			"username":    sess.Target.Username,
+			"sshid":       sess.Target.Data,
+			"origin_port": data.OriginAddr,
+			"origin_addr": data.OriginPort,
+			"dest_port":   data.DestPort,
+			"dest_addr":   data.DestAddr,
+		}).Trace("copying data from agent to client")
+
+		if _, err := io.Copy(agent, client); err != nil && err != io.EOF {
+			log.WithError(err).Error("failed to copy data from client to agent")
+
+			return
+		}
 	}()
+
+	wg.Wait()
+
+	log.WithFields(log.Fields{
+		"username":    sess.Target.Username,
+		"sshid":       sess.Target.Data,
+		"origin_port": data.OriginAddr,
+		"origin_addr": data.OriginPort,
+		"dest_port":   data.DestPort,
+		"dest_addr":   data.DestAddr,
+	}).Trace("handling direct-tcpip finished")
 }

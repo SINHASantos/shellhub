@@ -1,0 +1,15 @@
+#!/bin/sh
+
+set -e
+
+check_bin() {
+    local cmd=$1
+
+    if ! command -v "$cmd" &> /dev/null
+    then
+        echo "$cmd could not be found"
+        exit 127
+    fi
+}
+
+SHELLHUB_PATH=$(dirname $(dirname "$(realpath "$0")"))

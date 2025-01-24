@@ -1,9 +1,19 @@
 #!/bin/sh
 
+# Overridden variables from Go template: {{.Overrides}}
+
 docker_install() {
-    KEEPALIVE_INTERVAL_ARG="-e SHELLHUB_KEEPALIVE_INTERVAL=$KEEPALIVE_INTERVAL"
-    PREFERRED_HOSTNAME_ARG="-e SHELLHUB_PREFERRED_HOSTNAME=$PREFERRED_HOSTNAME"
-    PREFERRED_IDENTITY_ARG="-e SHELLHUB_PREFERRED_IDENTITY=$PREFERRED_IDENTITY"
+    [ -n "${KEEPALIVE_INTERVAL}" ] && ARGS="$ARGS -e SHELLHUB_KEEPALIVE_INTERVAL=$KEEPALIVE_INTERVAL"
+    [ -n "${PREFERRED_HOSTNAME}" ] && ARGS="$ARGS -e SHELLHUB_PREFERRED_HOSTNAME=$PREFERRED_HOSTNAME"
+    [ -n "${PREFERRED_IDENTITY}" ] && ARGS="$ARGS -e SHELLHUB_PREFERRED_IDENTITY=$PREFERRED_IDENTITY"
+
+    echo "📥 Downloading ShellHub container image..."
+
+    {
+        docker pull -q shellhubio/agent:$AGENT_VERSION
+    } || { echo "❌ Failed to download shellhub container image."; exit 1; }
+
+    echo "🚀 Starting ShellHub container..."
 
     docker run -d \
        --name=$CONTAINER_NAME \
@@ -19,52 +29,70 @@ docker_install() {
        -v /etc/resolv.conf:/etc/resolv.conf \
        -v /var/run:/var/run \
        -v /var/log:/var/log \
+       -v /tmp:/tmp \
        -e SHELLHUB_SERVER_ADDRESS=$SERVER_ADDRESS \
        -e SHELLHUB_PRIVATE_KEY=/host/etc/shellhub.key \
        -e SHELLHUB_TENANT_ID=$TENANT_ID \
-       $KEEPALIVE_INTERVAL_ARG \
-       $PREFERRED_HOSTNAME_ARG \
-       $PREFERRED_IDENTITY_ARG \
+       $ARGS \
        shellhubio/agent:$AGENT_VERSION
 }
 
-bundle_install() {
+snap_install() {
+    if ! type snap > /dev/null 2>&1; then
+        echo "❌ Snap is not installed or not supported on this system."
+        exit 1
+    fi
+
+    echo "📥 Downloading ShellHub snap package..."
+
+    {
+        sudo snap install shellhub-agent --channel=$AGENT_VERSION
+    } || { echo "❌ Failed to download and install ShellHub snap package."; exit 1; }
+
+    echo "🚀 Starting ShellHub snap service..."
+
+    {
+        sudo snap start shellhub-agent
+    } || { echo "❌ Failed to start ShellHub snap service."; exit 1; }
+}
+
+standalone_install() {
     INSTALL_DIR="${INSTALL_DIR:-/opt/shellhub}"
 
     if [ "$(id -u)" -ne 0 ]; then
-        printf "NOTE: This install method requires root privileges\n"
+        printf "⚠️ NOTE: This install method requires root privileges.\n"
         SUDO="sudo"
     fi
 
     if ! systemctl show-environment > /dev/null 2>&1 ; then
-        printf "ERROR: This is not a systemd based OS. Could be not proceed.."
+        printf "❌ ERROR: This is not a systemd-based operation system. Unable to proceed with the requested action.\n"
         exit 1
     fi
 
+    echo "📥 Downloading required files..."
 
-    echo "Downloading runc static binary..."
     {
         download "https://github.com/opencontainers/runc/releases/download/${RUNC_VERSION}/runc.${RUNC_ARCH}" $TMP_DIR/runc && chmod 755 $TMP_DIR/runc
-    } || { rm -rf $TMP_DIR && echo "Failed to download runc bnary" && exit 1; }
+    } || { rm -rf $TMP_DIR && echo "❌ Failed to download runc binary." && exit 1; }
 
-    echo "Downloading OCI runtime spec file..."
     {
         download https://raw.githubusercontent.com/shellhub-io/shellhub/${AGENT_VERSION}/agent/packaging/config.json $TMP_DIR/config.json
-    } ||  { rm -rf $TMP_DIR && echo "Failed to download OCI runtime spec" && exit 1; }
+    } ||  { rm -rf $TMP_DIR && echo "❌ Failed to download OCI runtime spec." && exit 1; }
 
-    echo "Downloading systemd service file..."
     {
         download https://raw.githubusercontent.com/shellhub-io/shellhub/${AGENT_VERSION}/agent/packaging/shellhub-agent.service $TMP_DIR/shellhub-agent.service
-    } || { rm -rf $TMP_DIR && echo "Failed to download systemd service file..." && exit 1; }
-    echo "Downloading rootfs tarball..."
+    } || { rm -rf $TMP_DIR && echo "❌ Failed to download systemd service file." && exit 1; }
+
+
     {
         download https://github.com/shellhub-io/shellhub/releases/download/$AGENT_VERSION/rootfs-$AGENT_ARCH.tar.gz $TMP_DIR/rootfs.tar.gz
-    } || { rm -rf $TMP_DIR && echo "Failed to download rootfs" && exit 1; }
+    } || { rm -rf $TMP_DIR && echo "❌ Failed to download rootfs." && exit 1; }
 
-    echo "Extracting rootfs..."
+    echo "📂 Extracting files..."
+
     {
         mkdir -p $TMP_DIR/rootfs && tar -C $TMP_DIR/rootfs -xzf $TMP_DIR/rootfs.tar.gz && rm -f $TMP_DIR/rootfs.tar.gz
-    } || { rm -rf $TMP_DIR && echo "Failed to extract rootfs" && exit 1; }
+    } || { rm -rf $TMP_DIR && echo "❌ Failed to extract rootfs." && exit 1; }
 
     rm -f $TMP_DIR/rootfs/.dockerenv
 
@@ -73,14 +101,34 @@ bundle_install() {
     sed -i "s,__ROOT_PATH__,$INSTALL_DIR/rootfs,g" $TMP_DIR/config.json
     sed -i "s,__INSTALL_DIR__,$INSTALL_DIR,g" $TMP_DIR/shellhub-agent.service
 
-    echo "Creating systemd service and starting it"
+    echo "🚀 Starting ShellHub system service..."
 
     $SUDO cp $TMP_DIR/shellhub-agent.service /etc/systemd/system/shellhub-agent.service
-    $SUDO systemctl enable --now shellhub-agent || { rm -rf $TMP_DIR && echo "Failed to active systemd service service"; exit 1; }
+    $SUDO systemctl enable --now shellhub-agent || { rm -rf $TMP_DIR && echo "❌ Failed to enable systemd service."; exit 1; }
 
     $SUDO rm -rf $INSTALL_DIR
     $SUDO mv $TMP_DIR $INSTALL_DIR
     $SUDO rm -rf $TMP_DIR
+}
+
+wsl_install() {
+    if ! systemctl show-environment > /dev/null 2>&1 ; then
+        printf "❌ ERROR: This install method requires systemd to be enabled.\n"
+        printf "Please refer to the following link for instructions on how to enable systemd:\n"
+        printf "https://learn.microsoft.com/en-us/windows/wsl/wsl-config#systemd-support\n"
+        printf "Once systemd is enabled, run this script again to complete the installation.\n"
+        exit 1
+    fi
+
+    if [ "$(wslinfo --networking-mode)" != "mirrored" ]; then
+        printf "❌ ERROR: WSL networking mode must be set to mirrored.\n"
+        printf "Please refer to the following link for instructions on how to set the networking mode:\n"
+        printf "https://learn.microsoft.com/en-us/windows/wsl/networking#mirrored-mode-networking\n"
+        printf "Once the networking mode is set to mirrored, run this script again to complete the installation.\n"
+        exit 1
+    fi
+
+    standalone_install
 }
 
 download() {
@@ -104,7 +152,15 @@ http_get() {
     fi
 }
 
-[ -z "$TENANT_ID" ] && { echo "ERROR: TENANT_ID is missing"; exit 1; }
+if [ "$(uname -s)" = "FreeBSD" ]; then
+    echo "👹 This system is running FreeBSD."
+    echo "❌ ERROR: Automatic installation is not supported on FreeBSD."
+    echo
+    echo "Please refer to the ShellHub port at https://github.com/shellhub-io/ports"
+    exit 1
+fi
+
+[ -z "$TENANT_ID" ] && { echo "ERROR: TENANT_ID is missing."; exit 1; }
 
 SERVER_ADDRESS="${SERVER_ADDRESS:-https://cloud.shellhub.io}"
 TENANT_ID="${TENANT_ID}"
@@ -128,7 +184,24 @@ if type docker > /dev/null 2>&1; then
     done
 fi
 
-INSTALL_METHOD="${INSTALL_METHOD:-bundle}"
+if [ -z "$INSTALL_METHOD" ] && type snap > /dev/null 2>&1; then
+    INSTALL_METHOD="snap"
+fi
+
+# Check if running on WSL
+if [ -e /proc/sys/fs/binfmt_misc/WSLInterop ]; then
+  WSL_EXE=$(find /mnt/*/Windows/System32/wsl.exe 2>/dev/null | head -n 1)
+  WSL_VERSION=$($WSL_EXE -l -v | tr -d '\0' | grep  ${WSL_DISTRO_NAME} | awk '{print $NF}' | tr -d -c '0-9')
+
+  if [ -z "$WSL_VERSION" ] || [ "$WSL_VERSION" -lt 2 ]; then
+    echo "❌ ERROR: WSL version 2 is required to run ShellHub."
+    exit 1
+  fi
+
+  INSTALL_METHOD="wsl"
+fi
+
+INSTALL_METHOD="${INSTALL_METHOD:-standalone}"
 
 # Auto detect arch if it has not already been set
 if [ -z "$AGENT_ARCH" ]; then
@@ -151,17 +224,33 @@ if [ -z "$AGENT_ARCH" ]; then
     esac
 fi
 
-echo "Install method: $INSTALL_METHOD"
-echo "Agent version: $AGENT_VERSION"
+echo "🛠️ Welcome to the ShellHub Agent Installer Script"
+echo
+echo "📝 Summary of chosen options:"
+echo "- Server address: $SERVER_ADDRESS"
+echo "- Tenant ID: $TENANT_ID"
+echo "- Install method: $INSTALL_METHOD"
+echo "- Agent version: $AGENT_VERSION"
+echo
 
 case "$INSTALL_METHOD" in
-    bundle)
-        bundle_install
-        ;;
     docker)
+        echo "🐳 Installing ShellHub using docker method..."
         docker_install
         ;;
+    snap)
+        echo "📦 Installing ShellHub using snap method..."
+        snap_install
+        ;;
+    standalone)
+        echo "🐧 Installing ShellHub using standalone method..."
+        standalone_install
+        ;;
+    wsl)
+        echo "🪟 Installing ShellHub using WSL method..."
+        wsl_install
+        ;;
     *)
-        echo "Install method not supported"
+        echo "❌ Install method not supported."
         exit 1
 esac

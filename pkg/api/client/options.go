@@ -26,7 +26,7 @@ func WithURL(u *url.URL) Opt {
 				c.port = 443
 			} else {
 				// use default port
-				c.port = apiPort
+				c.port = 80
 			}
 		}
 
@@ -61,6 +61,14 @@ func WithPort(port int) Opt {
 func WithLogger(logger *logrus.Logger) Opt {
 	return func(c *client) error {
 		c.logger = logger
+
+		return nil
+	}
+}
+
+func WithReverser(reverser IReverser) Opt {
+	return func(c *client) error {
+		c.reverser = reverser
 
 		return nil
 	}

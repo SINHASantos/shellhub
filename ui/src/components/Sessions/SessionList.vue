@@ -18,14 +18,21 @@
       <template v-slot:rows>
         <tr v-for="(session, index) in sessions" :key="index">
           <td class="text-center">
-            <v-icon v-if="session.active" color="success">
-              mdi-check-circle
-            </v-icon>
-            <v-tooltip location="bottom" v-else>
+            <v-tooltip location="bottom" :disabled="hasAuthorizationPlay()">
               <template v-slot:activator="{ props }">
-                <v-icon v-bind="props"> mdi-check-circle </v-icon>
+                <div v-bind="props">
+                  <SessionPlay
+                    :disabled="!session.authenticated || !session.recorded"
+                    :uid="session.uid"
+                    :device="session.device"
+                    :notHasAuthorization="!hasAuthorizationPlay()"
+                    :recorded="session.authenticated && session.recorded"
+                    @update="refreshSessions"
+                    data-test="sessionPlay-component"
+                  />
+                </div>
               </template>
-              <span>{{ lastSeen(session.last_seen) }}</span>
+              <span> You don't have this kind of authorization. </span>
             </v-tooltip>
           </td>
 
@@ -83,9 +90,15 @@
           <td class="text-center">
             <v-menu location="bottom" scrim eager>
               <template v-slot:activator="{ props }">
-                <v-chip v-bind="props" density="comfortable" size="small">
-                  <v-icon>mdi-dots-horizontal</v-icon>
-                </v-chip>
+                <v-btn
+                  v-bind="props"
+                  variant="plain"
+                  class="border rounded bg-v-theme-background"
+                  density="comfortable"
+                  size="default"
+                  icon="mdi-format-list-bulleted"
+                  data-test="session-list-actions"
+                />
               </template>
               <v-list class="bg-v-theme-surface" lines="two" density="compact">
                 <v-list-item @click="redirectToSession(session.uid)">
@@ -99,23 +112,6 @@
                     </v-list-item-title>
                   </div>
                 </v-list-item>
-
-                <v-tooltip location="bottom" class="text-center" :disabled="hasAuthorizationPlay()">
-                  <template v-slot:activator="{ props }">
-                    <div v-bind="props">
-                      <SessionPlay
-                        v-if="session.authenticated && session.recorded"
-                        :uid="session.uid"
-                        :device="session.device"
-                        :notHasAuthorization="!hasAuthorizationPlay()"
-                        :recorded="session.authenticated && session.recorded"
-                        @update="refreshSessions"
-                        data-test="sessionPlay-component"
-                      />
-                    </div>
-                  </template>
-                  <span> You don't have this kind of authorization. </span>
-                </v-tooltip>
 
                 <v-tooltip
                   location="bottom"
@@ -145,181 +141,149 @@
   </div>
 </template>
 
-<script lang="ts">
-import { defineComponent, ref, onMounted, watch, computed } from "vue";
+<script setup lang="ts">
+import { ref, onMounted, watch, computed } from "vue";
 import axios, { AxiosError } from "axios";
 import { useRouter } from "vue-router";
 import hasPermission from "../../utils/permission";
 import { actions, authorizer } from "../../authorizer";
 import { useStore } from "../../store";
-import { formatDateCompact, lastSeen } from "../../utils/formateDate";
-import { displayOnlyTenCharacters } from "../../utils/string";
-import showTag from "../../utils/tag";
+import { formatDateCompact } from "../../utils/formateDate";
 import DataTable from "../DataTable.vue";
 import SessionClose from "./SessionClose.vue";
 import SessionPlay from "./SessionPlay.vue";
 import { INotificationsError } from "../../interfaces/INotifications";
 import handleError from "@/utils/handleError";
 
-export default defineComponent({
-  setup() {
-    const store = useStore();
-    const router = useRouter();
-    const loading = ref(false);
-    const itemsPerPage = ref(10);
-    const page = ref(1);
-
-    const sessions = computed(() => store.getters["sessions/list"]);
-    const numberSessions = computed(
-      () => store.getters["sessions/getNumberSessions"],
-    );
-
-    const getSessions = async (perPagaeValue: number, pageValue: number) => {
-      if (!store.getters["box/getStatus"]) {
-        try {
-          loading.value = true;
-          const hasSessions = await store.dispatch("sessions/fetch", {
-            page: pageValue,
-            perPage: perPagaeValue,
-          });
-
-          if (!hasSessions) {
-            page.value--;
-          }
-        } catch (error: unknown) {
-          if (axios.isAxiosError(error)) {
-            const axiosError = error as AxiosError;
-            if (axiosError.response?.status === 403) {
-              store.dispatch("snackbar/showSnackbarErrorAssociation");
-            }
-          } else {
-            store.dispatch(
-              "snackbar/showSnackbarErrorLoading",
-              INotificationsError.sessionList,
-            );
-            handleError(error);
-          }
-        } finally {
-          loading.value = false;
-        }
-      } else {
-        store.dispatch("box/setStatus", false);
-      }
-    };
-
-    onMounted(async () => {
-      await getSessions(itemsPerPage.value, page.value);
-    });
-
-    const next = async () => {
-      await getSessions(itemsPerPage.value, ++page.value);
-    };
-
-    const prev = async () => {
-      try {
-        if (page.value > 1) await getSessions(itemsPerPage.value, --page.value);
-      } catch (error) {
-        store.dispatch("snackbar/setSnackbarErrorDefault");
-      }
-    };
-
-    const changeItemsPerPage = async (newItemsPerPage: number) => {
-      itemsPerPage.value = newItemsPerPage;
-    };
-
-    watch(itemsPerPage, async () => {
-      await getSessions(itemsPerPage.value, page.value);
-    });
-
-    const redirectToSession = (sessionUid: string) => {
-      router.push({ name: "detailsSession", params: { id: sessionUid } });
-    };
-
-    const redirectDevice = (deviceUid: string) => {
-      router.push({ name: "detailsDevice", params: { id: deviceUid } });
-    };
-
-    const refreshSessions = async () => {
-      await getSessions(itemsPerPage.value, page.value);
-    };
-
-    const hasAuthorizationRemoveRecord = () => {
-      const role = store.getters["auth/role"];
-      if (role !== "") {
-        return hasPermission(
-          authorizer.role[role],
-          actions.session.removeRecord,
-        );
-      }
-
-      return false;
-    };
-
-    const hasAuthorizationPlay = () => {
-      const role = store.getters["auth/role"];
-      if (role !== "") {
-        return hasPermission(authorizer.role[role], actions.session.play);
-      }
-
-      return false;
-    };
-
-    return {
-      headers: [
-        {
-          text: "Active",
-          value: "active",
-        },
-        {
-          text: "Device",
-          value: "device",
-        },
-        {
-          text: "Username",
-          value: "username",
-        },
-        {
-          text: "Authenticated",
-          value: "authenticated",
-        },
-        {
-          text: "IP Address",
-          value: "ip_address",
-        },
-        {
-          text: "Started",
-          value: "started",
-        },
-        {
-          text: "Last Seen",
-          value: "last_seen",
-        },
-        {
-          text: "Actions",
-          value: "actions",
-        },
-      ],
-      itemsPerPage,
-      page,
-      loading,
-      sessions,
-      numberSessions,
-      next,
-      prev,
-      showTag,
-      displayOnlyTenCharacters,
-      formatDateCompact,
-      lastSeen,
-      changeItemsPerPage,
-      redirectToSession,
-      redirectDevice,
-      refreshSessions,
-      hasAuthorizationRemoveRecord,
-      hasAuthorizationPlay,
-    };
+const headers = [
+  {
+    text: "Recorded",
+    value: "recorded",
   },
-  components: { DataTable, SessionClose, SessionPlay },
+  {
+    text: "Device",
+    value: "device",
+  },
+  {
+    text: "Username",
+    value: "username",
+  },
+  {
+    text: "Authenticated",
+    value: "authenticated",
+  },
+  {
+    text: "IP Address",
+    value: "ip_address",
+  },
+  {
+    text: "Started",
+    value: "started",
+  },
+  {
+    text: "Last Seen",
+    value: "last_seen",
+  },
+  {
+    text: "Actions",
+    value: "actions",
+  },
+];
+const store = useStore();
+const router = useRouter();
+const loading = ref(false);
+const itemsPerPage = ref(10);
+const page = ref(1);
+const sessions = computed(() => store.getters["sessions/list"]);
+const numberSessions = computed(
+  () => store.getters["sessions/getNumberSessions"],
+);
+
+const getSessions = async (perPagaeValue: number, pageValue: number) => {
+  try {
+    loading.value = true;
+    const hasSessions = await store.dispatch("sessions/fetch", {
+      page: pageValue,
+      perPage: perPagaeValue,
+    });
+
+    if (!hasSessions) {
+      page.value--;
+    }
+  } catch (error: unknown) {
+    if (axios.isAxiosError(error)) {
+      const axiosError = error as AxiosError;
+      if (axiosError.response?.status === 403) {
+        store.dispatch("snackbar/showSnackbarErrorAssociation");
+      }
+    } else {
+      store.dispatch(
+        "snackbar/showSnackbarErrorLoading",
+        INotificationsError.sessionList,
+      );
+      handleError(error);
+    }
+  } finally {
+    loading.value = false;
+  }
+};
+
+onMounted(async () => {
+  await getSessions(itemsPerPage.value, page.value);
 });
+
+const next = async () => {
+  await getSessions(itemsPerPage.value, ++page.value);
+};
+
+const prev = async () => {
+  try {
+    if (page.value > 1) await getSessions(itemsPerPage.value, --page.value);
+  } catch (error) {
+    store.dispatch("snackbar/setSnackbarErrorDefault");
+  }
+};
+
+const changeItemsPerPage = async (newItemsPerPage: number) => {
+  itemsPerPage.value = newItemsPerPage;
+};
+
+watch(itemsPerPage, async () => {
+  await getSessions(itemsPerPage.value, page.value);
+});
+
+const redirectToSession = (sessionUid: string) => {
+  router.push({ name: "SessionDetails", params: { id: sessionUid } });
+};
+
+const redirectDevice = (deviceUid: string) => {
+  router.push({ name: "DeviceDetails", params: { id: deviceUid } });
+};
+
+const refreshSessions = async () => {
+  await getSessions(itemsPerPage.value, page.value);
+};
+
+const hasAuthorizationRemoveRecord = () => {
+  const role = store.getters["auth/role"];
+  if (role !== "") {
+    return hasPermission(
+      authorizer.role[role],
+      actions.session.removeRecord,
+    );
+  }
+
+  return false;
+};
+
+const hasAuthorizationPlay = () => {
+  const role = store.getters["auth/role"];
+  if (role !== "") {
+    return hasPermission(authorizer.role[role], actions.session.play);
+  }
+
+  return false;
+};
 </script>
 
 <style scoped>

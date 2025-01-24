@@ -1,82 +1,42 @@
-import { defineConfig } from "vitest/config";
-import vue from "@vitejs/plugin-vue";
-// https://github.com/vuetifyjs/vuetify-loader/tree/next/packages/vite-plugin
-import vuetify, { transformAssetUrls } from "vite-plugin-vuetify";
-import NodeGlobalsPolyfillPlugin from "@esbuild-plugins/node-globals-polyfill";
-import polyfillNode from "rollup-plugin-polyfill-node";
-import { fileURLToPath, URL } from "url";
-import Markdown from "vite-plugin-vue-markdown";
+import { defineConfig } from "vite";
+import Vue from "@vitejs/plugin-vue";
+import VuetifyPlugin from "vite-plugin-vuetify";
+import { nodePolyfills } from 'vite-plugin-node-polyfills'
+import Markdown from "unplugin-vue-markdown/vite";
+import * as path from "node:path";
 
 // https://vitejs.dev/config/
 export default defineConfig({
+  plugins: [
+    nodePolyfills(),
+    Vue(),
+    VuetifyPlugin({
+      autoImport: true,
+    }),
+    Markdown({ markdownItOptions: {
+      html: true,
+      typographer: true,
+    } }),
+  ],
   server: {
     port: 8080,
     hmr: {
       clientPort: 80,
     },
   },
-  plugins: [
-    vue({
-      template: { transformAssetUrls },
-      script: {
-        defineModel: true,
+  css: {
+    preprocessorOptions: {
+      scss: {
+        api: "modern",
       },
-    }),
-    vuetify({
-      autoImport: true
-    }),
-    Markdown({
-      markdownItOptions: {
-        html: true,
-        typographer: true,
-      },
-    }),
-    NodeGlobalsPolyfillPlugin({
-      process: true,
-      buffer: true,
-    }),
-  ],
+    },
+  },
   resolve: {
     alias: {
-      "@": fileURLToPath(new URL("./src", import.meta.url)),
+      "@": path.resolve(__dirname, "src"),
     },
   },
   define: {
     "process.env": process.env,
-  },
-  build: {
-    rollupOptions: {
-      output: {
-        manualChunks: {
-          dashboard: ["./src/views/Dashboard.vue"],
-          devices: [
-            "./src/views/Devices.vue",
-            "./src/components/Devices/DeviceList.vue",
-            "./src/components/Devices/DevicePendingList.vue",
-            "./src/components/Devices/DeviceRejectedList.vue",
-          ],
-          "details-device": ["./src/views/DetailsDevice.vue"],
-          sessions: ["./src/views/Sessions.vue"],
-          "details-sessions": ["./src/views/DetailsSessions.vue"],
-          "firewall-rules": ["./src/views/FirewallRules.vue"],
-          "public-keys": ["./src/views/PublicKeys.vue"],
-          settings: [
-            "./src/views/Settings.vue",
-            "./src/components/Setting/SettingProfile.vue",
-            "./src/components/Setting/SettingNamespace.vue",
-            "./src/components/Setting/SettingPrivateKeys.vue",
-            "./src/components/Setting/SettingTags.vue",
-            "./src/components/Setting/SettingBilling.vue",
-          ],
-        },
-      },
-      plugins: [
-        polyfillNode(),
-        NodeGlobalsPolyfillPlugin({
-          process: true,
-          buffer: true,
-        }),
-      ],
-    },
   },
 });

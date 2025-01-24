@@ -38,17 +38,17 @@ jobs:
 
     steps:
       - name: checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: login to docker hub
         if: "github.event_name != 'pull_request'"
         run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v3
 
       - name: Set github reference env
         run: echo RELEASE_VERSION=${GITHUB_REF#refs/*/} >> $GITHUB_ENV
@@ -79,7 +79,7 @@ jobs:
 
       - name: upload rootfs artifact
         if: "contains(github.ref, 'refs/tags/v')"
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: rootfs-${{ matrix.dockerfile }}
           path: rootfs-${{ matrix.dockerfile }}.tar.gz
@@ -91,7 +91,7 @@ jobs:
 
     steps:
       - name: checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set github reference env
         run: echo RELEASE_VERSION=${GITHUB_REF#refs/*/} >> $GITHUB_ENV
@@ -151,14 +151,14 @@ jobs:
     runs-on: ubuntu-20.04
     steps:
       - name: checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: export agent tarball
         run: |
           cd ./agent && go mod vendor && cd .. && tar czf shellhub-agent.tar.gz agent
 
       - name: upload agent tarball artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: shellhub-agent
           path: shellhub-agent.tar.gz
@@ -169,31 +169,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: download amd64
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: rootfs-amd64
       - name: download arm32v6
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: rootfs-arm32v6
       - name: download arm32v7
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: rootfs-arm32v7
       - name: download arm64v8
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: rootfs-arm64v8
       - name: download i386
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: rootfs-i386
       - name: download vendored tarball
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: shellhub-agent
       - name: release draft
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           draft: true
           generate_release_notes: true

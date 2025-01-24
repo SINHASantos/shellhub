@@ -5,22 +5,23 @@ import (
 	"net"
 
 	"github.com/shellhub-io/shellhub/api/store"
-	"github.com/shellhub-io/shellhub/pkg/api/paginator"
+	"github.com/shellhub-io/shellhub/pkg/api/query"
 	"github.com/shellhub-io/shellhub/pkg/api/requests"
 	"github.com/shellhub-io/shellhub/pkg/models"
 )
 
 type SessionService interface {
-	ListSessions(ctx context.Context, pagination paginator.Query) ([]models.Session, int, error)
+	ListSessions(ctx context.Context, paginator query.Paginator) ([]models.Session, int, error)
 	GetSession(ctx context.Context, uid models.UID) (*models.Session, error)
 	CreateSession(ctx context.Context, session requests.SessionCreate) (*models.Session, error)
 	DeactivateSession(ctx context.Context, uid models.UID) error
 	KeepAliveSession(ctx context.Context, uid models.UID) error
-	SetSessionAuthenticated(ctx context.Context, uid models.UID, authenticated bool) error
+	UpdateSession(ctx context.Context, uid models.UID, model models.SessionUpdate) error
+	EventSession(ctx context.Context, uid models.UID, event *models.SessionEvent) error
 }
 
-func (s *service) ListSessions(ctx context.Context, pagination paginator.Query) ([]models.Session, int, error) {
-	return s.store.SessionList(ctx, pagination)
+func (s *service) ListSessions(ctx context.Context, paginator query.Paginator) ([]models.Session, int, error) {
+	return s.store.SessionList(ctx, paginator)
 }
 
 func (s *service) GetSession(ctx context.Context, uid models.UID) (*models.Session, error) {
@@ -62,6 +63,42 @@ func (s *service) KeepAliveSession(ctx context.Context, uid models.UID) error {
 	return s.store.SessionSetLastSeen(ctx, uid)
 }
 
-func (s *service) SetSessionAuthenticated(ctx context.Context, uid models.UID, authenticated bool) error {
-	return s.store.SessionSetAuthenticated(ctx, uid, authenticated)
+func (s *service) UpdateSession(ctx context.Context, uid models.UID, model models.SessionUpdate) error {
+	sess, err := s.store.SessionGet(ctx, uid)
+	if err != nil {
+		return NewErrSessionNotFound(uid, err)
+	}
+
+	var insertActiveSession bool
+
+	if model.Authenticated != nil {
+		if !sess.Authenticated {
+			sess.Authenticated = *model.Authenticated
+
+			insertActiveSession = true
+		}
+	}
+
+	if model.Type != nil {
+		sess.Type = *model.Type
+	}
+
+	if err := s.store.SessionUpdate(ctx, uid, sess); err != nil {
+		return err
+	}
+
+	if insertActiveSession {
+		return s.store.SessionActiveCreate(ctx, uid, sess)
+	}
+
+	return nil
+}
+
+func (s *service) EventSession(ctx context.Context, uid models.UID, event *models.SessionEvent) error {
+	sess, err := s.store.SessionGet(ctx, uid)
+	if err != nil {
+		return NewErrSessionNotFound(uid, err)
+	}
+
+	return s.store.SessionEvent(ctx, models.UID(sess.UID), event)
 }

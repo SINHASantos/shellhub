@@ -18,9 +18,14 @@
       <div>
         <v-menu location="bottom" scrim eager>
           <template v-slot:activator="{ props }">
-            <v-chip density="comfortable" size="small">
-              <v-icon v-bind="props">mdi-dots-horizontal</v-icon>
-            </v-chip>
+            <v-btn
+              v-bind="props"
+              variant="plain"
+              class="border rounded bg-v-theme-background"
+              density="comfortable"
+              size="default"
+              icon="mdi-format-list-bulleted"
+            />
           </template>
           <v-list class="bg-v-theme-surface" lines="two" density="compact">
             <DeviceRename
@@ -28,6 +33,12 @@
               :name="device.name"
               @newHostname="receiveName"
               data-test="deviceRename-component"
+            />
+
+            <TunnelCreate
+              v-if="envVariables.hasTunnels && envVariables.isEnterprise"
+              :uid="device.uid"
+              @update="getTunnels"
             />
 
             <TagFormUpdate
@@ -38,6 +49,7 @@
             />
 
             <DeviceDelete
+              variant="device"
               :uid="device.uid"
               @update="refreshUsers"
               data-test="deviceDelete-component"
@@ -102,13 +114,17 @@
           </v-tooltip>
         </div>
       </div>
-
       <div>
         <div class="text-overline mt-3">Last Seen:</div>
         <div data-test="deviceConvertDate-field">
           <p>{{ formatDate(device.last_seen) }}</p>
         </div>
       </div>
+      <div v-if="envVariables.hasTunnels && envVariables.isEnterprise">
+        <div class="text-overline mt-3" data-test="tunnel-list">Tunnel List:</div>
+        <TunnelList />
+      </div>
+
     </v-card-text>
   </v-card>
   <v-card class="mt-2 pa-4 bg-v-theme-surface" v-else>
@@ -116,78 +132,68 @@
   </v-card>
 </template>
 
-<script lang="ts">
-import { computed, defineComponent, onMounted } from "vue";
+<script setup lang="ts">
+import { computed, onMounted } from "vue";
 import { useRoute } from "vue-router";
 import { useStore } from "../store";
 import { displayOnlyTenCharacters } from "../utils/string";
 import showTag from "../utils/tag";
 import DeviceIcon from "../components/Devices/DeviceIcon.vue";
 import TagFormUpdate from "../components/Tags/TagFormUpdate.vue";
+import TunnelList from "../components/Tunnels/TunnelList.vue";
 import DeviceDelete from "../components/Devices/DeviceDelete.vue";
 import DeviceRename from "../components/Devices/DeviceRename.vue";
 import { INotificationsError } from "../interfaces/INotifications";
 import TerminalDialog from "../components/Terminal/TerminalDialog.vue";
 import { formatDate } from "@/utils/formateDate";
 import handleError from "@/utils/handleError";
+import { envVariables } from "@/envVariables";
+import TunnelCreate from "@/components/Tunnels/TunnelCreate.vue";
 
-export default defineComponent({
-  name: "DeviceDetails",
-  inheritAttrs: true,
-  setup() {
-    const store = useStore();
-    const route = useRoute();
-    const deviceId = computed(() => route.params.id);
-    const device = computed(() => store.getters["devices/get"]);
+const store = useStore();
+const route = useRoute();
+const deviceId = computed(() => route.params.id);
+const device = computed(() => store.getters["devices/get"]);
 
-    onMounted(async () => {
-      try {
-        await store.dispatch("devices/get", deviceId.value);
-      } catch (error: unknown) {
-        store.dispatch(
-          "snackbar/showSnackbarErrorAction",
-          INotificationsError.deviceDetails,
-        );
-        handleError(error);
-      }
-    });
-    const deviceIsEmpty = computed(
-      () => store.getters["devices/get"]
-        && Object.keys(store.getters["devices/get"]).length === 0,
+onMounted(async () => {
+  try {
+    await store.dispatch("devices/get", deviceId.value);
+  } catch (error: unknown) {
+    store.dispatch(
+      "snackbar/showSnackbarErrorAction",
+      INotificationsError.deviceDetails,
     );
-
-    const refreshUsers = async () => {
-      try {
-        await store.dispatch("devices/get", deviceId.value);
-      } catch (error: unknown) {
-        store.dispatch(
-          "snackbar/showSnackbarErrorAction",
-          INotificationsError.deviceDetails,
-        );
-        handleError(error);
-      }
-    };
-
-    const receiveName = (params: string) => {
-      device.value.name = params;
-    };
-
-    return {
-      device,
-      deviceIsEmpty,
-      displayOnlyTenCharacters,
-      showTag,
-      formatDate,
-      refreshUsers,
-      receiveName,
-    };
-  },
-  components: {
-    DeviceIcon,
-    TagFormUpdate,
-    DeviceDelete,
-    DeviceRename,
-    TerminalDialog,
-  },
+    handleError(error);
+  }
 });
+
+const deviceIsEmpty = computed(
+  () => store.getters["devices/get"]
+        && Object.keys(store.getters["devices/get"]).length === 0,
+);
+
+const getTunnels = async () => {
+  await store.dispatch("tunnels/get", deviceId.value);
+};
+
+const refreshUsers = async () => {
+  try {
+    await store.dispatch("devices/get", deviceId.value);
+    if (envVariables.isEnterprise) {
+      await store.dispatch("tunnels/get", deviceId.value);
+      return;
+    }
+  } catch (error: unknown) {
+    store.dispatch(
+      "snackbar/showSnackbarErrorAction",
+      INotificationsError.deviceDetails,
+    );
+    handleError(error);
+  }
+};
+
+const receiveName = (params: string) => {
+  device.value.name = params;
+};
+
 </script>

@@ -5,19 +5,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shellhub-io/shellhub/api/pkg/dbtest"
 	"github.com/shellhub-io/shellhub/pkg/models"
-	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	migrate "github.com/xakep666/mongo-migrate"
 	"go.mongodb.org/mongo-driver/bson"
 )
 
 func TestMigration38(t *testing.T) {
-	logrus.Info("Testing Migration 38")
-
-	db := dbtest.DBServer{}
-	defer db.Stop()
+	t.Cleanup(func() {
+		assert.NoError(t, srv.Reset())
+	})
 
 	type Expected struct {
 		CreatedAt string
@@ -34,44 +31,40 @@ func TestMigration38(t *testing.T) {
 	}
 
 	userNoCreatedAt := models.User{
-		ID:         "userNoCreatedID",
-		Namespaces: 0,
-		Confirmed:  false,
-		CreatedAt:  timeZero,
-		LastLogin:  timeNow,
+		ID:        "userNoCreatedID",
+		CreatedAt: timeZero,
+		LastLogin: timeNow,
 		UserData: models.UserData{
 			Name:     "userNoCreatedAt",
 			Email:    "userNoCreatedAt@mail.com",
 			Username: "userNoCreatedAt",
 		},
-		UserPassword: models.UserPassword{
-			Password: "",
+		Password: models.UserPassword{
+			Hash: "2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b",
 		},
 	}
 	userWithCreatedAt := models.User{
-		ID:         "userWithCreatedID",
-		Namespaces: 0,
-		Confirmed:  false,
-		CreatedAt:  timePast,
-		LastLogin:  timeNow,
+		ID:        "userWithCreatedID",
+		CreatedAt: timePast,
+		LastLogin: timeNow,
 		UserData: models.UserData{
 			Name:     "userWithCreatedAt",
 			Email:    "userWithCreatedAt@mail.com",
 			Username: "userWithCreatedAt",
 		},
-		UserPassword: models.UserPassword{
-			Password: "",
+		Password: models.UserPassword{
+			Hash: "2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b",
 		},
 	}
 
-	_, err := db.Client().Database("test").Collection("users").InsertOne(context.TODO(), userNoCreatedAt)
+	_, err := c.Database("test").Collection("users").InsertOne(context.TODO(), userNoCreatedAt)
 	assert.NoError(t, err)
 
-	_, err = db.Client().Database("test").Collection("users").InsertOne(context.TODO(), userWithCreatedAt)
+	_, err = c.Database("test").Collection("users").InsertOne(context.TODO(), userWithCreatedAt)
 	assert.NoError(t, err)
 
-	migrates := migrate.NewMigrate(db.Client().Database("test"), migrations...)
-	err = migrates.Up(migrate.AllAvailable)
+	migrates := migrate.NewMigrate(c.Database("test"), migrations...)
+	err = migrates.Up(context.Background(), migrate.AllAvailable)
 	assert.NoError(t, err)
 
 	cases := []struct {
@@ -84,7 +77,7 @@ func TestMigration38(t *testing.T) {
 				t.Helper()
 
 				var userMigrated *models.User
-				err = db.Client().Database("test").Collection("users").FindOne(context.TODO(), bson.D{{"username", userNoCreatedAt.Username}}).Decode(&userMigrated)
+				err = c.Database("test").Collection("users").FindOne(context.TODO(), bson.D{{"username", userNoCreatedAt.Username}}).Decode(&userMigrated)
 				assert.NoError(t, err)
 				assert.Equal(t,
 					Expected{CreatedAt: convertDate(userNoCreatedAt.LastLogin), LastLogin: convertDate(userNoCreatedAt.LastLogin)},
@@ -98,7 +91,7 @@ func TestMigration38(t *testing.T) {
 				t.Helper()
 
 				var userMigrated *models.User
-				err = db.Client().Database("test").Collection("users").FindOne(context.TODO(), bson.D{{"username", userWithCreatedAt.Username}}).Decode(&userMigrated)
+				err = c.Database("test").Collection("users").FindOne(context.TODO(), bson.D{{"username", userWithCreatedAt.Username}}).Decode(&userMigrated)
 				assert.NoError(t, err)
 				assert.Equal(t,
 					Expected{CreatedAt: convertDate(userWithCreatedAt.CreatedAt), LastLogin: convertDate(userWithCreatedAt.LastLogin)},

@@ -1,31 +1,76 @@
-FROM openresty/openresty:1.21.4.2-alpine AS base
+# base stage
+FROM golang:1.22.6-alpine3.20 AS base
 
-RUN ["rm", "/etc/nginx/conf.d/default.conf"]
+ARG GOPROXY
 
-COPY --from=hairyhenderson/gomplate:v2.5.0-slim /gomplate /bin/gomplate
+RUN apk add --no-cache git ca-certificates libgcc curl certbot certbot-nginx certbot-dns certbot-dns-digitalocean
 
-RUN apk add --no-cache perl curl && opm get bungle/lua-resty-template
-RUN apk add inotify-tools
-RUN apk add certbot certbot-nginx
+WORKDIR $GOPATH/src/github.com/shellhub-io/shellhub
 
-RUN mkdir -p /etc/nginx/default.d
+COPY ./go.mod ./
 
-RUN mkdir /app
+WORKDIR $GOPATH/src/github.com/shellhub-io/shellhub/gateway
 
-VOLUME /etc/letsencrypt
+COPY ./gateway/go.mod ./gateway/go.sum ./
 
-WORKDIR /app
+RUN go mod download
 
-COPY ./gateway/entrypoint.sh /
+# builder stage
+FROM base AS builder
+
+COPY ./pkg $GOPATH/src/github.com/shellhub-io/shellhub/pkg
+COPY ./gateway .
+
+WORKDIR $GOPATH/src/github.com/shellhub-io/shellhub
+
+RUN go mod download
+
+WORKDIR $GOPATH/src/github.com/shellhub-io/shellhub/gateway
+
+RUN go build
+
+# development stage
+FROM base AS development
+
+COPY --from=openresty/openresty:1.25.3.1-5-alpine-apk /usr/local/openresty /usr/local/openresty
+
+RUN mkdir /etc/shellhub-gateway
+
+RUN mkdir -p /var/run/openresty /etc/letsencrypt && \
+    curl -sSL https://ssl-config.mozilla.org/ffdhe2048.txt -o /etc/shellhub-gateway/dhparam.pem
+
+RUN apk add --update openssl build-base
+RUN go install github.com/air-verse/air@v1.52.3 && \
+    go install github.com/go-delve/delve/cmd/dlv@v1.23.0 && \
+    go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.63.2 && \
+    go install github.com/vektra/mockery/v2/...@v2.20.0
+
+WORKDIR $GOPATH/src/github.com/shellhub-io/shellhub
+
+RUN go mod download
+
+COPY ./gateway/entrypoint-dev.sh /entrypoint.sh
+
+WORKDIR $GOPATH/src/github.com/shellhub-io/shellhub/gateway
 
 ENTRYPOINT ["/entrypoint.sh"]
 
-CMD ["/usr/local/openresty/bin/openresty", "-g", "daemon off;"]
+# production stage
+FROM alpine:3.21.2 AS production
 
-FROM base as development 
+RUN apk add libgcc curl certbot certbot-nginx certbot-dns certbot-dns-digitalocean
 
-FROM base as production
+COPY --from=openresty/openresty:1.25.3.1-5-alpine-apk /usr/local/openresty /usr/local/openresty
 
-COPY ./gateway/nginx.conf /app/
+RUN mkdir /etc/shellhub-gateway
 
-COPY ./gateway/conf.d /app/conf.d
+RUN mkdir -p /var/run/openresty /etc/letsencrypt && \
+    curl -sSL https://ssl-config.mozilla.org/ffdhe2048.txt -o /etc/shellhub-gateway/dhparam.pem
+
+COPY --from=builder /go/src/github.com/shellhub-io/shellhub/gateway/gateway /gateway
+
+RUN mkdir /templates
+
+COPY ./gateway/nginx /templates
+
+ENTRYPOINT /gateway

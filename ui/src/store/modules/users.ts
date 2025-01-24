@@ -1,10 +1,23 @@
 import { Module } from "vuex";
+import { AxiosResponse } from "axios";
 import * as apiUser from "../api/users";
 import { State } from "..";
 
 export interface UsersState {
   statusUpdateAccountDialog: boolean;
   statusUpdateAccountDialogByDeviceAction: boolean;
+  deviceDuplicationError: boolean,
+  showPaywall: boolean,
+  premiumContent: Array<object>,
+  signUpToken: string | undefined,
+  info: {
+    version: string;
+    endpoints: {
+      ssh: string;
+      api: string;
+    };
+    setup: boolean;
+  }
 }
 
 export const users: Module<UsersState, State> = {
@@ -12,6 +25,18 @@ export const users: Module<UsersState, State> = {
   state: {
     statusUpdateAccountDialog: false,
     statusUpdateAccountDialogByDeviceAction: false,
+    deviceDuplicationError: false,
+    showPaywall: false,
+    premiumContent: [],
+    signUpToken: undefined,
+    info: {
+      version: "",
+      endpoints: {
+        ssh: "",
+        api: "",
+      },
+      setup: false,
+    },
   },
 
   getters: {
@@ -19,6 +44,11 @@ export const users: Module<UsersState, State> = {
     statusUpdateAccountDialogByDeviceAction(state) {
       return state.statusUpdateAccountDialogByDeviceAction;
     },
+    deviceDuplicationError: (state) => state.deviceDuplicationError,
+    showPaywall: (state) => state.showPaywall,
+    getPremiumContent: (state) => state.premiumContent,
+    getSignToken: (state) => state.signUpToken,
+    getSystemInfo: (state) => state.info,
   },
 
   mutations: {
@@ -29,12 +59,44 @@ export const users: Module<UsersState, State> = {
     updateStatusUpdateAccountDialogByDeviceAction(state, status) {
       state.statusUpdateAccountDialogByDeviceAction = status;
     },
+    updateDeviceDuplicationError(state, status) {
+      state.deviceDuplicationError = status;
+    },
+
+    setSignUpToken(state, token) {
+      state.signUpToken = token;
+    },
+
+    setShowPaywall(state, status) {
+      state.showPaywall = status;
+    },
+
+    setPremiumContent(state, data) {
+      state.premiumContent = data;
+    },
+
+    setSystemInfo(state, payload) {
+      state.info = payload;
+    },
   },
 
   actions: {
     async signUp(context, data) {
       try {
-        await apiUser.signUp(data);
+        const res: AxiosResponse = await apiUser.signUp(data);
+
+        if (res.data.token) {
+          context.commit("setSignUpToken", res.data.token);
+          context.commit("auth/authSuccess", res.data, { root: true });
+          localStorage.setItem("token", res.data.token || "");
+          localStorage.setItem("user", res.data.user || "");
+          localStorage.setItem("name", res.data.name || "");
+          localStorage.setItem("tenant", res.data.tenant || "");
+          localStorage.setItem("email", res.data.email || "");
+          localStorage.setItem("id", res.data.id || "");
+          localStorage.setItem("role", res.data.role || "");
+          localStorage.setItem("namespacesWelcome", JSON.stringify({}));
+        }
       } catch (error) {
         console.error(error);
         throw error;
@@ -44,6 +106,15 @@ export const users: Module<UsersState, State> = {
     async patchData(context, data) {
       try {
         await apiUser.patchUserData(data);
+      } catch (error) {
+        console.error(error);
+        throw error;
+      }
+    },
+
+    async setup(context, data) {
+      try {
+        await apiUser.setup(data);
       } catch (error) {
         console.error(error);
         throw error;
@@ -95,12 +166,35 @@ export const users: Module<UsersState, State> = {
       }
     },
 
+    async getPremiumContent(context) {
+      try {
+        const res = await apiUser.premiumContent();
+        context.commit("setPremiumContent", res);
+      } catch (error) {
+        console.error(error);
+        throw error;
+      }
+    },
+
+    async fetchSystemInfo({ commit }) {
+      try {
+        const response = await apiUser.getInfo();
+        commit("setSystemInfo", response.data);
+      } catch (error) {
+        console.error(error);
+      }
+    },
+
     setStatusUpdateAccountDialog(context, status) {
       context.commit("updateStatusUpdateAccountDialog", status);
     },
 
     setStatusUpdateAccountDialogByDeviceAction(context, status) {
       context.commit("updateStatusUpdateAccountDialogByDeviceAction", status);
+    },
+
+    setDeviceDuplicationOnAcceptance(context, status) {
+      context.commit("updateDeviceDuplicationError", status);
     },
   },
 };

@@ -7,11 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shellhub-io/shellhub/api/pkg/guard"
-	"github.com/shellhub-io/shellhub/pkg/models"
-
 	"github.com/shellhub-io/shellhub/api/services/mocks"
+	"github.com/shellhub-io/shellhub/pkg/api/authorizer"
 	"github.com/shellhub-io/shellhub/pkg/api/requests"
+	"github.com/shellhub-io/shellhub/pkg/models"
 	"github.com/stretchr/testify/assert"
 	gomock "github.com/stretchr/testify/mock"
 )
@@ -31,7 +30,7 @@ func TestGetSystemInfo(t *testing.T) {
 				Host: "example.com",
 				Port: 0,
 			},
-			requiredMocks: func(updatePayloadMock requests.SystemGetInfo) {
+			requiredMocks: func(_ requests.SystemGetInfo) {
 				mock.On("SystemGetInfo", gomock.Anything, requests.SystemGetInfo{
 					Host: "example.com",
 					Port: 0,
@@ -53,7 +52,7 @@ func TestGetSystemInfo(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodGet, "/api/info", strings.NewReader(string(jsonData)))
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Role", guard.RoleOwner)
+			req.Header.Set("X-Role", authorizer.RoleOwner.String())
 			rec := httptest.NewRecorder()
 
 			e := NewRouter(mock)
@@ -98,7 +97,7 @@ func TestGetStats(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
 
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Role", guard.RoleOwner)
+			req.Header.Set("X-Role", authorizer.RoleOwner.String())
 			rec := httptest.NewRecorder()
 
 			e := NewRouter(mock)

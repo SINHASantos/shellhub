@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	UpdateUserDataURL     = "/users/:id/data"
-	UpdateUserPasswordURL = "/users/:id/password" //nolint:gosec
+	URLUpdateUser                   = "/users"
+	URLDeprecatedUpdateUser         = "/users/:id/data"
+	URLDeprecatedUpdateUserPassword = "/users/:id/password" //nolint:gosec
 )
 
 const (
@@ -19,28 +20,33 @@ const (
 	ParamUserName = "username"
 )
 
-func (h *Handler) UpdateUserData(c gateway.Context) error {
-	var req requests.UserDataUpdate
-	if err := c.Bind(&req); err != nil {
+func (h *Handler) UpdateUser(c gateway.Context) error {
+	req := new(requests.UpdateUser)
+
+	if err := c.Bind(req); err != nil {
 		return err
 	}
 
-	if err := c.Validate(&req); err != nil {
+	if err := c.Validate(req); err != nil {
 		return err
 	}
 
-	if fields, err := h.service.UpdateDataUser(c.Ctx(), req.ID, req); err != nil {
+	if fields, err := h.service.UpdateUser(c.Ctx(), req); err != nil {
 		// FIXME: API compatibility.
 		//
 		// The UI uses the fields with error messages to identify if it is invalid or duplicated.
-		e, ok := err.(errors.Error)
-		if !ok {
+		var e errors.Error
+		if ok := errors.As(err, &e); !ok {
 			return err
 		}
 
 		switch e.Code {
 		case services.ErrCodeInvalid:
-			return c.JSON(http.StatusBadRequest, fields)
+			if len(fields) > 1 {
+				return c.JSON(http.StatusBadRequest, fields)
+			}
+
+			return c.NoContent(http.StatusBadRequest)
 		case services.ErrCodeDuplicated:
 			return c.JSON(http.StatusConflict, fields)
 		default:

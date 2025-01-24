@@ -5,20 +5,21 @@ import (
 	"strconv"
 
 	"github.com/shellhub-io/shellhub/api/pkg/gateway"
-	"github.com/shellhub-io/shellhub/pkg/api/paginator"
+	"github.com/shellhub-io/shellhub/pkg/api/query"
 	"github.com/shellhub-io/shellhub/pkg/api/requests"
 	"github.com/shellhub-io/shellhub/pkg/models"
 )
 
 const (
-	GetSessionsURL             = "/sessions"
-	GetSessionURL              = "/sessions/:uid"
-	SetSessionAuthenticatedURL = "/sessions/:uid"
-	CreateSessionURL           = "/sessions"
-	FinishSessionURL           = "/sessions/:uid/finish"
-	KeepAliveSessionURL        = "/sessions/:uid/keepalive"
-	RecordSessionURL           = "/sessions/:uid/record"
-	PlaySessionURL             = "/sessions/:uid/play"
+	GetSessionsURL      = "/sessions"
+	GetSessionURL       = "/sessions/:uid"
+	UpdateSessionURL    = "/sessions/:uid"
+	CreateSessionURL    = "/sessions"
+	FinishSessionURL    = "/sessions/:uid/finish"
+	KeepAliveSessionURL = "/sessions/:uid/keepalive"
+	RecordSessionURL    = "/sessions/:uid/record"
+	PlaySessionURL      = "/sessions/:uid/play"
+	EventsSessionsURL   = "/sessions/:uid/events"
 )
 
 const (
@@ -26,15 +27,15 @@ const (
 )
 
 func (h *Handler) GetSessionList(c gateway.Context) error {
-	query := paginator.NewQuery()
-	if err := c.Bind(query); err != nil {
+	paginator := query.NewPaginator()
+	if err := c.Bind(paginator); err != nil {
 		return err
 	}
 
 	// TODO: normalize is not required when request is privileged
-	query.Normalize()
+	paginator.Normalize()
 
-	sessions, count, err := h.service.ListSessions(c.Ctx(), *query)
+	sessions, count, err := h.service.ListSessions(c.Ctx(), *paginator)
 	if err != nil {
 		return err
 	}
@@ -62,8 +63,8 @@ func (h *Handler) GetSession(c gateway.Context) error {
 	return c.JSON(http.StatusOK, session)
 }
 
-func (h *Handler) SetSessionAuthenticated(c gateway.Context) error {
-	var req requests.SessionAuthenticatedSet
+func (h *Handler) UpdateSession(c gateway.Context) error {
+	var req requests.SessionUpdate
 	if err := c.Bind(&req); err != nil {
 		return err
 	}
@@ -72,7 +73,10 @@ func (h *Handler) SetSessionAuthenticated(c gateway.Context) error {
 		return err
 	}
 
-	return h.service.SetSessionAuthenticated(c.Ctx(), models.UID(req.UID), req.Authenticated)
+	return h.service.UpdateSession(c.Ctx(), models.UID(req.UID), models.SessionUpdate{
+		Authenticated: req.Authenticated,
+		Type:          req.Type,
+	})
 }
 
 func (h *Handler) CreateSession(c gateway.Context) error {
@@ -129,4 +133,21 @@ func (h *Handler) PlaySession(c gateway.Context) error {
 
 func (h *Handler) DeleteRecordedSession(c gateway.Context) error {
 	return c.NoContent(http.StatusOK)
+}
+
+func (h *Handler) EventSession(c gateway.Context) error {
+	var req requests.SessionEvent
+	if err := c.Bind(&req); err != nil {
+		return err
+	}
+
+	if err := c.Validate(&req); err != nil {
+		return err
+	}
+
+	return h.service.EventSession(c.Ctx(), models.UID(req.UID), &models.SessionEvent{
+		Type:      req.Type,
+		Timestamp: req.Timestamp,
+		Data:      req.Data,
+	})
 }

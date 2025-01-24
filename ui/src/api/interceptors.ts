@@ -9,7 +9,7 @@ const onRequest = (config: InternalAxiosRequestConfig): InternalAxiosRequestConf
 
 const onRequestError = (error: AxiosError) => {
   store.dispatch("spinner/setStatus", false);
-  Promise.reject(error);
+  return Promise.reject(error);
 };
 
 const onResponse = (response: AxiosResponse): AxiosResponse => {
@@ -23,7 +23,7 @@ const onResponseError = async (error: AxiosError): Promise<AxiosError> => {
   // @ts-ignore
   if (error.response.status === 401) {
     await store.dispatch("auth/logout");
-    await router.push({ name: "login" });
+    await router.push({ name: "Login", query: router.currentRoute.value.query });
   }
   return Promise.reject(error);
 };

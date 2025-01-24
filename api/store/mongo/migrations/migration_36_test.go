@@ -4,27 +4,25 @@ import (
 	"context"
 	"testing"
 
-	"github.com/shellhub-io/shellhub/api/pkg/dbtest"
 	"github.com/shellhub-io/shellhub/pkg/envs"
 	"github.com/shellhub-io/shellhub/pkg/models"
-	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	migrate "github.com/xakep666/mongo-migrate"
 	"go.mongodb.org/mongo-driver/bson"
 )
 
 func TestMigration36(t *testing.T) {
-	logrus.Info("Testing Migration 36 - Test namespace update max_devices in Cloud")
-	db := dbtest.DBServer{}
-	defer db.Stop()
+	t.Cleanup(func() {
+		assert.NoError(t, srv.Reset())
+	})
 
 	migrations := GenerateMigrations()[:35]
 
-	migrates := migrate.NewMigrate(db.Client().Database("test"), migrations...)
-	err := migrates.Up(migrate.AllAvailable)
+	migrates := migrate.NewMigrate(c.Database("test"), migrations...)
+	err := migrates.Up(context.Background(), migrate.AllAvailable)
 	assert.NoError(t, err)
 
-	version, _, err := migrates.Version()
+	version, _, err := migrates.Version(context.Background())
 	assert.NoError(t, err)
 	assert.Equal(t, uint64(35), version)
 
@@ -75,18 +73,18 @@ func TestMigration36(t *testing.T) {
 		namespaces[i] = v.toBeMigrated
 	}
 
-	_, err = db.Client().Database("test").Collection("namespaces").InsertMany(context.TODO(), namespaces)
+	_, err = c.Database("test").Collection("namespaces").InsertMany(context.TODO(), namespaces)
 	assert.NoError(t, err)
 
-	migrates = migrate.NewMigrate(db.Client().Database("test"), GenerateMigrations()[35])
-	err = migrates.Up(migrate.AllAvailable)
+	migrates = migrate.NewMigrate(c.Database("test"), GenerateMigrations()[35])
+	err = migrates.Up(context.Background(), migrate.AllAvailable)
 	assert.NoError(t, err)
 
-	version, _, err = migrates.Version()
+	version, _, err = migrates.Version(context.Background())
 	assert.NoError(t, err)
 	assert.Equal(t, uint64(36), version)
 
-	cur, err := db.Client().Database("test").Collection("namespaces").Find(context.TODO(), bson.D{})
+	cur, err := c.Database("test").Collection("namespaces").Find(context.TODO(), bson.D{})
 	assert.NoError(t, err)
 
 	index := 0

@@ -1,8 +1,8 @@
-FROM node:20.5.1-alpine3.17 as base
+FROM node:21.4.0-alpine3.17 as base
 
 ARG NPM_CONFIG_REGISTRY
 
-RUN apk add --update build-base python3
+RUN apk add --update build-base python3 curl
 
 WORKDIR /app
 
@@ -21,12 +21,6 @@ COPY --from=base /app/node_modules /node_modules
 
 COPY ui/scripts /scripts
 
-RUN apk add openjdk11-jre
-
-RUN npm install -g @openapitools/openapi-generator-cli
-
-RUN openapi-generator-cli version-manager set 6.0.0
-
 CMD ["/scripts/entrypoint-dev.sh"]
 
 FROM base as builder
@@ -41,7 +35,9 @@ COPY --from=base /app/node_modules ./node_modules
 
 RUN npm run build
 
-FROM nginx:1.25.2-alpine as production
+FROM nginx:1.27.3-alpine as production
+
+RUN apk add curl
 
 RUN rm /etc/nginx/conf.d/default.conf
 COPY ui/nginx.conf /etc/nginx/conf.d

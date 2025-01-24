@@ -8,18 +8,22 @@
           <h1 class="text-h1 font-weight-bold mt-4 mb-2 text-primary">404</h1>
         </v-row>
         <p class="mb-5 font-weight-bold text-h3">Page not found</p>
-        <p class="mb-4 font-weight-bold text-h6">The requested URL was not found on the server. You can go back to the dashboard
+        <p class="mb-4 font-weight-bold text-h6">The requested URL was not found on the server. You can go back to the home
           by clicking the button below.</p>
-        <v-btn color="primary" @click="$router.push({ name: 'Dashboard' })" data-test="dashboard-btn">Go to Dashboard</v-btn>
+        <v-btn color="primary" @click="goToHome" data-test="home-btn">Go to Home</v-btn>
       </v-col>
     </v-row>
   </v-container>
 </template>
 
-<script lang="ts">
-import { defineComponent } from "vue";
+<script setup lang="ts">
+import { useRouter } from "vue-router";
 
-export default defineComponent({
-  name: "NotFound",
-});
+const router = useRouter();
+
+const goToHome = () => {
+  router.push({ name: "Home" });
+};
+
+defineExpose({ goToHome });
 </script>

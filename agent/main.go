@@ -4,13 +4,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"runtime"
 	"time"
 
 	"github.com/Masterminds/semver"
-	"github.com/kelseyhightower/envconfig"
 	"github.com/shellhub-io/shellhub/pkg/agent"
+	"github.com/shellhub-io/shellhub/pkg/agent/connector"
 	"github.com/shellhub-io/shellhub/pkg/agent/pkg/selfupdater"
+	"github.com/shellhub-io/shellhub/pkg/agent/server/modes/host/command"
+	"github.com/shellhub-io/shellhub/pkg/envs"
 	"github.com/shellhub-io/shellhub/pkg/loglevel"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -28,18 +31,12 @@ func main() {
 	// Default command.
 	rootCmd := &cobra.Command{ // nolint: exhaustruct
 		Use: "agent",
-		Run: func(cmd *cobra.Command, args []string) {
+		Run: func(cmd *cobra.Command, _ []string) {
 			loglevel.SetLogLevel()
 
-			cfg := agent.Config{}
-
-			// Process unprefixed env vars for backward compatibility
-			envconfig.Process("", &cfg) // nolint:errcheck
-
-			if err := envconfig.Process("shellhub", &cfg); err != nil {
-				// show envconfig usage help users to run agent
-				envconfig.Usage("shellhub", &cfg) // nolint:errcheck
-				log.Fatal(err)
+			cfg, fields, err := agent.LoadConfigFromEnv()
+			if err != nil {
+				log.WithError(err).WithFields(fields).Fatal("Failed to load de configuration from the environmental variables")
 			}
 
 			if os.Geteuid() == 0 && cfg.SingleUserPassword != "" {
@@ -88,7 +85,7 @@ func main() {
 				"mode":    mode,
 			}).Info("Starting ShellHub")
 
-			ag, err := agent.NewAgentWithConfig(&cfg)
+			ag, err := agent.NewAgentWithConfig(cfg, new(agent.HostMode))
 			if err != nil {
 				log.WithError(err).WithFields(log.Fields{
 					"version":       AgentVersion,
@@ -103,33 +100,15 @@ func main() {
 				}).Fatal("Failed to initialize agent")
 			}
 
-			listing := make(chan bool)
-			go func() {
-				<-listing
-				// NOTICE: We only start to ping the server when the agent is ready to accept connections.
-				// It will make the agent ping to server after the ticker time set on ping function, what is 10 minutes by
-				// default.
-
-				ping := make(chan agent.Ping)
-				go ag.Ping(nil, ping)
-
-				for range ping {
-					log.WithFields(log.Fields{
-						"version":        AgentVersion,
-						"mode":           mode,
-						"tenant_id":      cfg.TenantID,
-						"server_address": cfg.ServerAddress,
-						"timestamp":      time.Now(),
-					}).Info("ping")
-				}
-			}()
+			ctx := cmd.Context()
 
 			log.WithFields(log.Fields{
-				"version":        AgentVersion,
-				"mode":           mode,
-				"tenant_id":      cfg.TenantID,
-				"server_address": cfg.ServerAddress,
-			}).Info("listening for connections")
+				"version":            AgentVersion,
+				"mode":               mode,
+				"tenant_id":          cfg.TenantID,
+				"server_address":     cfg.ServerAddress,
+				"preferred_hostname": cfg.PreferredHostname,
+			}).Info("Listening for connections")
 
 			// Disable check update in development mode
 			if AgentVersion != "latest" {
@@ -137,61 +116,177 @@ func main() {
 					for {
 						nextVersion, err := ag.CheckUpdate()
 						if err != nil {
-							log.Error(err)
+							log.WithError(err).WithFields(log.Fields{
+								"version":            AgentVersion,
+								"mode":               mode,
+								"tenant_id":          cfg.TenantID,
+								"server_address":     cfg.ServerAddress,
+								"preferred_hostname": cfg.PreferredHostname,
+							}).Error("Failed to check update")
 
 							goto sleep
 						}
 
 						if nextVersion.GreaterThan(currentVersion) {
 							if err := updater.ApplyUpdate(nextVersion); err != nil {
-								log.Error(err)
+								log.WithError(err).WithFields(log.Fields{
+									"version":            AgentVersion,
+									"mode":               mode,
+									"tenant_id":          cfg.TenantID,
+									"server_address":     cfg.ServerAddress,
+									"preferred_hostname": cfg.PreferredHostname,
+								}).Error("Failed to apply update")
 							}
 
 							log.WithFields(log.Fields{
-								"version":        currentVersion,
-								"next_version":   nextVersion.String(),
-								"mode":           mode,
-								"tenant_id":      cfg.TenantID,
-								"server_address": cfg.ServerAddress,
-							}).Info("update successfully applied")
+								"version":            currentVersion,
+								"next_version":       nextVersion.String(),
+								"mode":               mode,
+								"tenant_id":          cfg.TenantID,
+								"server_address":     cfg.ServerAddress,
+								"preferred_hostname": cfg.PreferredHostname,
+							}).Info("Update successfully applied")
 						}
 
 					sleep:
+						log.WithFields(log.Fields{
+							"version":            AgentVersion,
+							"mode":               mode,
+							"tenant_id":          cfg.TenantID,
+							"server_address":     cfg.ServerAddress,
+							"preferred_hostname": cfg.PreferredHostname,
+						}).Info("Sleeping for 24 hours")
+
 						time.Sleep(time.Hour * 24)
 					}
 				}()
 			}
 
-			ag.Listen(listing) //nolint:errcheck
+			if err := ag.Listen(ctx); err != nil {
+				log.WithError(err).WithFields(log.Fields{
+					"version":            AgentVersion,
+					"mode":               mode,
+					"tenant_id":          cfg.TenantID,
+					"server_address":     cfg.ServerAddress,
+					"preferred_hostname": cfg.PreferredHostname,
+				}).Fatal("Failed to listen for connections")
+			}
+
+			log.WithFields(log.Fields{
+				"version":            AgentVersion,
+				"mode":               mode,
+				"tenant_id":          cfg.TenantID,
+				"server_address":     cfg.ServerAddress,
+				"preferred_hostname": cfg.PreferredHostname,
+			}).Info("Stopped listening for connections")
 		},
 	}
+
+	rootCmd.AddCommand(&cobra.Command{
+		Use:   "connector",
+		Short: "Starts the ShellHub Agent in Connector mode",
+		Run: func(cmd *cobra.Command, _ []string) {
+			updater, err := selfupdater.NewUpdater(AgentVersion)
+			if err != nil {
+				log.Panic(err)
+			}
+
+			err = updater.CompleteUpdate()
+			if err != nil {
+				log.Warning(err)
+				os.Exit(0)
+			}
+
+			currentVersion := new(semver.Version)
+
+			if AgentVersion != "latest" {
+				currentVersion, err = updater.CurrentVersion()
+				if err != nil {
+					log.Panic(err)
+				}
+			}
+
+			cfg, fields, err := connector.LoadConfigFromEnv()
+			if err != nil {
+				log.WithError(err).
+					WithFields(fields).
+					Fatal("Failed to load de configuration from the environmental variables")
+			}
+
+			logger := log.WithFields(
+				log.Fields{
+					"address":      cfg.ServerAddress,
+					"tenant_id":    cfg.TenantID,
+					"private_keys": cfg.PrivateKeys,
+					"version":      AgentVersion,
+				},
+			)
+
+			cfg.PrivateKeys = path.Dir(cfg.PrivateKeys)
+
+			logger.Info("Starting ShellHub Agent Connector")
+
+			connector.ConnectorVersion = AgentVersion
+			connector, err := connector.NewDockerConnector(cfg.ServerAddress, cfg.TenantID, cfg.PrivateKeys)
+			if err != nil {
+				logger.Fatal("Failed to create ShellHub Agent Connector")
+			}
+
+			if AgentVersion != "latest" {
+				go func() {
+					for {
+						nextVersion, err := connector.CheckUpdate()
+						if err != nil {
+							log.WithError(err).WithFields(log.Fields{
+								"version": AgentVersion,
+							}).Error("Failed to check update")
+
+							goto sleep
+						}
+
+						if nextVersion.GreaterThan(currentVersion) {
+							if err := updater.ApplyUpdate(nextVersion); err != nil {
+								log.WithError(err).WithFields(log.Fields{
+									"version": AgentVersion,
+								}).Error("Failed to apply update")
+							}
+
+							log.WithFields(log.Fields{
+								"version":      currentVersion,
+								"next_version": nextVersion.String(),
+							}).Info("Update successfully applied")
+						}
+
+					sleep:
+						log.WithFields(log.Fields{
+							"version": AgentVersion,
+						}).Info("Sleeping for 24 hours")
+
+						time.Sleep(time.Hour * 24)
+					}
+				}()
+			}
+
+			if err := connector.Listen(cmd.Context()); err != nil {
+				logger.Fatal("Failed to listen for connections")
+			}
+
+			logger.Info("ShellHub Agent Connector stopped")
+		},
+	})
 
 	rootCmd.AddCommand(&cobra.Command{ // nolint: exhaustruct
 		Use:   "info",
 		Short: "Show information about the agent",
-		Run: func(cmd *cobra.Command, args []string) {
+		Run: func(cmd *cobra.Command, _ []string) {
 			loglevel.SetLogLevel()
 
-			cfg := agent.Config{}
-
-			// Process unprefixed env vars for backward compatibility
-			envconfig.Process("", &cfg) // nolint:errcheck
-
-			if err := envconfig.Process("shellhub", &cfg); err != nil {
-				// show envconfig usage help users to run agent
-				envconfig.Usage("shellhub", &cfg) // nolint:errcheck
+			cfg, err := envs.ParseWithPrefix[agent.Config]("SHELLHUB_")
+			if err != nil {
 				log.Fatal(err)
 			}
 
-			ag, err := agent.NewAgentWithConfig(&cfg)
-			if err != nil {
-				log.WithError(err).WithFields(log.Fields{
-					"version":       AgentVersion,
-					"configuration": cfg,
-				}).Fatal("Failed to create agent")
-			}
-
-			info, err := ag.GetInfo()
+			info, err := agent.GetInfo(cfg)
 			if err != nil {
 				log.WithError(err).WithFields(log.Fields{
 					"version":       AgentVersion,
@@ -225,8 +320,8 @@ func main() {
 		Short: "Starts the SFTP server",
 		Long: `Starts the SFTP server. This command is used internally by the agent and should not be used directly.
 It is initialized by the agent when a new SFTP session is created.`,
-		Run: func(cmd *cobra.Command, args []string) {
-			agent.NewSFTPServer()
+		Run: func(_ *cobra.Command, args []string) {
+			agent.NewSFTPServer(command.SFTPServerMode(args[0]))
 		},
 	})
 

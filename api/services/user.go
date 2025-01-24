@@ -2,67 +2,86 @@ package services
 
 import (
 	"context"
+	"strings"
 
 	"github.com/shellhub-io/shellhub/pkg/api/requests"
 	"github.com/shellhub-io/shellhub/pkg/models"
-	"github.com/shellhub-io/shellhub/pkg/validator"
 )
 
 type UserService interface {
-	UpdateDataUser(ctx context.Context, id string, userData requests.UserDataUpdate) ([]string, error)
+	// UpdateUser updates the user's data, such as email and username. Since some attributes must be unique per user,
+	// it returns a list of duplicated unique values and an error if any.
+	//
+	// FIX:
+	// When `req.RecoveryEmail` is equal to `user.Email` or `req.Email`, return a bad request status
+	// with an error object like `{"error": "recovery_email must be different from email"}` instead of setting
+	// conflicts to `["email", "recovery_email"]`.
+	UpdateUser(ctx context.Context, req *requests.UpdateUser) (conflicts []string, err error)
+
 	UpdatePasswordUser(ctx context.Context, id string, currentPassword, newPassword string) error
 }
 
-// UpdateDataUser update user data.
-//
-// It receives a context, used to "control" the request flow, the user's ID, and a requests.UserDataUpdate struct with
-// fields to update in the models.User.
-//
-// It returns a slice of strings with the fields that contains data duplicated in the database, and an error.
-func (s *service) UpdateDataUser(ctx context.Context, id string, userData requests.UserDataUpdate) ([]string, error) {
-	if _, _, err := s.store.UserGetByID(ctx, id, false); err != nil {
-		return nil, NewErrUserNotFound(id, nil)
+func (s *service) UpdateUser(ctx context.Context, req *requests.UpdateUser) ([]string, error) {
+	user, _, err := s.store.UserGetByID(ctx, req.UserID, false)
+	if err != nil {
+		return []string{}, NewErrUserNotFound(req.UserID, nil)
 	}
 
-	conflictFields := make([]string, 0)
-	existentUser, _ := s.store.UserGetByUsername(ctx, userData.Username)
-	if existentUser != nil && existentUser.ID != id {
-		conflictFields = append(conflictFields, "username")
+	if req.RecoveryEmail == user.Email || req.RecoveryEmail == req.Email {
+		return []string{"email", "recovery_email"}, NewErrBadRequest(nil)
 	}
 
-	existentUser, _ = s.store.UserGetByEmail(ctx, userData.Email)
-	if existentUser != nil && existentUser.ID != id {
-		conflictFields = append(conflictFields, "email")
+	conflictsTarget := &models.UserConflicts{Email: req.Email, Username: req.Username}
+	conflictsTarget.Distinct(user)
+	if conflicts, has, _ := s.store.UserConflicts(ctx, conflictsTarget); has {
+		return conflicts, NewErrUserDuplicated(conflicts, nil)
 	}
 
-	if len(conflictFields) > 0 {
-		return conflictFields, NewErrUserDuplicated(conflictFields, nil)
+	changes := &models.UserChanges{
+		Name:          req.Name,
+		Username:      strings.ToLower(req.Username),
+		Email:         strings.ToLower(req.Email),
+		RecoveryEmail: strings.ToLower(req.RecoveryEmail),
 	}
 
-	user := models.User{
-		UserData: models.UserData{
-			Name:     userData.Name,
-			Username: userData.Username,
-			Email:    userData.Email,
-		},
+	if req.Password != "" {
+		// TODO: test
+		if !user.Password.Compare(req.CurrentPassword) {
+			return []string{}, NewErrUserPasswordNotMatch(nil)
+		}
+
+		neo, _ := models.HashUserPassword(req.Password)
+		changes.Password = neo.Hash
 	}
 
-	return nil, s.store.UserUpdateData(ctx, id, user)
+	if err := s.store.UserUpdate(ctx, req.UserID, changes); err != nil {
+		return []string{}, NewErrUserUpdate(user, err)
+	}
+
+	return []string{}, nil
 }
 
+// UpdatePasswordUser updates a user's password.
+//
+// Deprecated, use [Service.UpdateUser] instead.
 func (s *service) UpdatePasswordUser(ctx context.Context, id, currentPassword, newPassword string) error {
 	user, _, err := s.store.UserGetByID(ctx, id, false)
 	if user == nil {
 		return NewErrUserNotFound(id, err)
 	}
 
-	currentPassword = validator.HashPassword(currentPassword)
-
-	if user.Password != currentPassword {
+	if !user.Password.Compare(currentPassword) {
 		return NewErrUserPasswordNotMatch(nil)
 	}
 
-	newPassword = validator.HashPassword(newPassword)
+	neo, err := models.HashUserPassword(newPassword)
+	if err != nil {
+		return NewErrUserPasswordInvalid(err)
+	}
 
-	return s.store.UserUpdatePassword(ctx, newPassword, id)
+	if err := s.store.UserUpdate(ctx, id, &models.UserChanges{Password: neo.Hash}); err != nil {
+		return NewErrUserUpdate(user, err)
+	}
+
+	return nil
 }
