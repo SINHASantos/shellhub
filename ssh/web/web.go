@@ -1,120 +1,121 @@
 package web
 
 import (
-	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/sha256"
-	"encoding/hex"
-	"errors"
+	"encoding/json"
+	"net/http"
+	"time"
 
+	"github.com/labstack/echo/v4"
+	"github.com/shellhub-io/shellhub/pkg/cache"
 	"github.com/shellhub-io/shellhub/ssh/pkg/magickey"
-	"github.com/shellhub-io/shellhub/ssh/web/pkg/cache"
 	"github.com/shellhub-io/shellhub/ssh/web/pkg/token"
+	"golang.org/x/net/websocket"
 )
 
-type Input struct {
-	Device      string
-	Username    string
-	Password    string
-	Fingerprint string
-	Signature   string
-}
+// NewSSHServerBridge creates routes into a [echo.Router] to connect a webscoket to SSH using Shell session.
+func NewSSHServerBridge(router *echo.Echo, cache cache.Cache) {
+	const WebsocketSSHBridgeRoute = "/ws/ssh"
 
-type Output struct {
-	Token string
-}
+	manager := newManager(30 * time.Second)
 
-type Session struct {
-	Token       string
-	Device      string
-	Username    string
-	Password    string
-	Fingerprint string
-	Signature   string
-}
+	// NOTICE: this is the route that users send your credentials securely.
+	router.Add(http.MethodPost, WebsocketSSHBridgeRoute, echo.WrapHandler(
+		http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
+			type Success struct {
+				Token string `json:"token"`
+			}
 
-// CreateSession creates a new web session.
-func CreateSession(ctx context.Context, data *Input) (*Session, error) {
-	if data == nil {
-		return nil, errors.New("failed to get the session's data")
-	}
+			type Fail struct {
+				Error string `json:"error"`
+			}
 
-	key := magickey.GetRerefence()
+			decoder := json.NewDecoder(req.Body)
+			encoder := json.NewEncoder(res)
 
-	token, err := token.NewToken(key)
-	if err != nil {
-		return nil, errors.New("failed to generate the session's token")
-	}
+			response := func(res http.ResponseWriter, status int, data any) {
+				res.WriteHeader(status)
+				res.Header().Set("Content-Type", "application/json")
 
-	if data.Password != "" {
-		signed, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, &key.PublicKey, []byte(data.Password), nil)
-		if err != nil {
-			return nil, errors.New("failed to sign the session's password")
+				encoder.Encode(data) //nolint: errcheck,errchkjson
+			}
+
+			var request Credentials
+			if err := decoder.Decode(&request); err != nil {
+				response(res, http.StatusBadRequest, Fail{Error: err.Error()})
+
+				return
+			}
+
+			key := magickey.GetRerefence()
+
+			token, err := token.NewToken(key)
+			if err != nil {
+				response(res, http.StatusBadRequest, Fail{Error: err.Error()})
+
+				return
+			}
+
+			request.encryptPassword(key) //nolint:errcheck
+
+			// NOTICE: saved credentials are delete after a time period.
+			manager.save(token.ID, &request)
+
+			response(res, http.StatusOK, Success{Token: token.ID})
+		})),
+	)
+
+	router.Add(http.MethodGet, WebsocketSSHBridgeRoute, echo.WrapHandler(websocket.Handler(func(wsconn *websocket.Conn) {
+		defer wsconn.Close()
+
+		// exit sends the error's message to the client on the browser.
+		exit := func(wsconn *websocket.Conn, err error) {
+			wsconn.Write([]byte(err.Error())) //nolint:errcheck
 		}
 
-		data.Password = hex.EncodeToString(signed)
-	}
-
-	cached, err := cache.Save(ctx, token, &cache.Data{
-		Device:      data.Device,
-		Username:    data.Username,
-		Password:    data.Password,
-		Fingerprint: data.Fingerprint,
-		Signature:   data.Signature,
-	})
-	if err != nil {
-		return nil, errors.New("failed to cache the session's token")
-	}
-
-	return &Session{
-		Token:       cached.Token,
-		Device:      data.Device,
-		Username:    data.Username,
-		Password:    data.Password,
-		Fingerprint: data.Fingerprint,
-		Signature:   data.Signature,
-	}, nil
-}
-
-// RestoreSession restores a web session.
-func RestoreSession(ctx context.Context, data *Output) (*Session, error) {
-	if data == nil {
-		return nil, errors.New("failed to get the session's token")
-	}
-
-	key := magickey.GetRerefence()
-
-	token, err := token.Parse(data.Token)
-	if err != nil {
-		return nil, errors.New("invalid session's token")
-	}
-
-	cached, err := cache.Restore(ctx, token)
-	if err != nil {
-		return nil, errors.New("failed to get credentials to login")
-	}
-
-	if cached.Password != "" {
-		decoded, err := hex.DecodeString(cached.Password)
+		token, err := getToken(wsconn.Request())
 		if err != nil {
-			return nil, errors.New("failed to decode the session's password")
+			exit(wsconn, ErrWebSocketGetToken)
+
+			return
 		}
 
-		decrypted, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, key, decoded, nil)
+		cols, rows, err := getDimensions(wsconn.Request())
 		if err != nil {
-			return nil, errors.New("failed to decrypt the session's password")
+			exit(wsconn, ErrWebSocketGetDimensions)
+
+			return
 		}
 
-		cached.Password = string(decrypted)
-	}
+		ip, err := getIP(wsconn.Request())
+		if err != nil {
+			exit(wsconn, ErrWebSocketGetIP)
 
-	return &Session{
-		Token:       data.Token,
-		Device:      cached.Device,
-		Username:    cached.Username,
-		Password:    cached.Password,
-		Fingerprint: cached.Fingerprint,
-		Signature:   cached.Signature,
-	}, nil
+			return
+		}
+
+		creds, ok := manager.get(token)
+		if !ok {
+			exit(wsconn, ErrBridgeCredentialsNotFound)
+		}
+
+		conn := NewConn(wsconn)
+		defer conn.Close()
+
+		go conn.KeepAlive()
+
+		creds.decryptPassword(magickey.GetRerefence()) //nolint:errcheck
+
+		if err := newSession(
+			wsconn.Request().Context(),
+			cache,
+			conn,
+			creds,
+			Dimensions{cols, rows},
+			Info{IP: ip},
+		); err != nil {
+			exit(wsconn, err)
+
+			return
+		}
+	})))
 }

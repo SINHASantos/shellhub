@@ -26,6 +26,13 @@ const {
   deviceRename,
   deviceChooser,
   deviceDetails,
+  // Tunnel
+  tunnelCreate,
+  tunnelDelete,
+  //Connector,
+  connectorAdd,
+  connectorEdit,
+  connectorRemove,
   // Tag
   tagEdit,
   tagRemove,
@@ -46,17 +53,20 @@ const {
   publicKeyRemove,
   // Namespace
   namespaceCreate,
-  namespaceRename,
+  namespaceEdit,
   namespaceAddMember,
   namespaceEditMember,
   namespaceRemoveMember,
   namespaceEnableSessionRecord,
   namespaceRemove,
+  NamespaceLeave,
   // Billing
   billingSubscribe,
   billingUnsubscribe,
   // Notification
-  notificaitonView,
+  notificationView,
+  apiKeyCreate,
+  apiKeyDelete,
 } = iota();
 
 export const actions: { [key: string]: any } = {
@@ -69,6 +79,15 @@ export const actions: { [key: string]: any } = {
     rename: deviceRename,
     chooser: deviceChooser,
     details: deviceDetails,
+  },
+  tunnel: {
+    create: tunnelCreate,
+    delete: tunnelDelete,
+  },
+  connector: {
+   add: connectorAdd,
+   edit: connectorEdit,
+   remove: connectorRemove
   },
   tag: {
     edit: tagEdit,
@@ -94,19 +113,24 @@ export const actions: { [key: string]: any } = {
   },
   namespace: {
     create: namespaceCreate,
-    rename: namespaceRename,
+    rename: namespaceEdit,
     addMember: namespaceAddMember,
     editMember: namespaceEditMember,
     removeMember: namespaceRemoveMember,
     enableSessionRecord: namespaceEnableSessionRecord,
     remove: namespaceRemove,
+    leave: NamespaceLeave,
   },
   billing: {
     subscribe: billingSubscribe,
     unsubscribe: billingUnsubscribe,
   },
   notification: {
-    view: notificaitonView,
+    view: notificationView,
+  },
+  apiKey: {
+    create: apiKeyCreate,
+    delete: apiKeyDelete,
   },
 };
 
@@ -122,6 +146,13 @@ export const authorizer : { [key: string]: any } = {
       actions.device.rename,
       actions.device.chooser,
       actions.device.details,
+      // Tunnel
+      actions.tunnel.create,
+      actions.tunnel.delete,
+      // Connectors
+      actions.connector.add,
+      actions.connector.remove,
+      actions.connector.edit,
       // Tag
       actions.tag.edit,
       actions.tag.remove,
@@ -153,6 +184,8 @@ export const authorizer : { [key: string]: any } = {
       actions.billing.unsubscribe,
       // Notification
       actions.notification.view,
+      actions.apiKey.create,
+      actions.apiKey.delete,
     ],
     administrator: [
       // Device
@@ -163,6 +196,13 @@ export const authorizer : { [key: string]: any } = {
       actions.device.connect,
       actions.device.rename,
       actions.device.details,
+      // Tunnel
+      actions.tunnel.create,
+      actions.tunnel.delete,
+      // Connectors
+      actions.connector.add,
+      actions.connector.remove,
+      actions.connector.edit,
       // Tag
       actions.tag.edit,
       actions.tag.remove,
@@ -187,10 +227,13 @@ export const authorizer : { [key: string]: any } = {
       actions.namespace.addMember,
       actions.namespace.editMember,
       actions.namespace.removeMember,
+      actions.namespace.leave,
       actions.namespace.enableSessionRecord,
       // Billing
       // Notification
       actions.notification.view,
+      actions.apiKey.create,
+      actions.apiKey.delete,
     ],
     operator: [
       // Device
@@ -211,8 +254,10 @@ export const authorizer : { [key: string]: any } = {
       // Public Key
       // Namespace
       actions.namespace.create,
+      actions.namespace.leave,
       // Billing
       // Notification
+      actions.notification.view,
     ],
     observer: [
       // Device
@@ -225,6 +270,7 @@ export const authorizer : { [key: string]: any } = {
       // Public Key
       // Namespace
       actions.namespace.create,
+      actions.namespace.leave,
       // Billing
       // Notification
     ],

@@ -4,10 +4,12 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
+	log "github.com/sirupsen/logrus"
 )
 
 // an adapter for representing WebSocket connection as a net.Conn
@@ -15,17 +17,102 @@ import (
 
 var ErrUnexpectedMessageType = errors.New("unexpected websocket message type")
 
+const (
+	pongTimeout  = time.Second * 35
+	pingInterval = time.Second * 30
+)
+
 type Adapter struct {
 	conn       *websocket.Conn
 	readMutex  sync.Mutex
 	writeMutex sync.Mutex
 	reader     io.Reader
+	stopPingCh chan struct{}
+	pongCh     chan bool
+	Logger     *log.Entry
+}
+
+func (a *Adapter) WithID(requestID string) *Adapter {
+	a.Logger = a.Logger.WithFields(log.Fields{
+		"request-id": requestID,
+	})
+
+	return a
+}
+
+func (a *Adapter) WithDevice(tenant string, device string) *Adapter {
+	a.Logger = a.Logger.WithFields(log.Fields{
+		"tenant": tenant,
+		"device": device,
+	})
+
+	return a
 }
 
 func New(conn *websocket.Conn) *Adapter {
-	return &Adapter{
+	adapter := &Adapter{
 		conn: conn,
+		Logger: log.NewEntry(&log.Logger{
+			Out:       os.Stderr,
+			Formatter: log.StandardLogger().Formatter,
+			Hooks:     log.StandardLogger().Hooks,
+			Level:     log.StandardLogger().Level,
+		}),
 	}
+
+	return adapter
+}
+
+func (a *Adapter) Ping() chan bool {
+	if a.pongCh != nil {
+		a.Logger.Debug("pong channel is not null")
+
+		return a.pongCh
+	}
+
+	a.stopPingCh = make(chan struct{})
+	a.pongCh = make(chan bool)
+
+	timeout := time.AfterFunc(pongTimeout, func() {
+		a.Logger.Debug("close connection due pong timeout")
+
+		_ = a.Close()
+	})
+
+	a.conn.SetPongHandler(func(_ string) error {
+		timeout.Reset(pongTimeout)
+		a.Logger.Trace("pong timeout")
+
+		// non-blocking channel write
+		select {
+		case a.pongCh <- true:
+			a.Logger.Trace("write true to pong channel")
+		default:
+		}
+
+		return nil
+	})
+
+	// ping loop
+	go func() {
+		ticker := time.NewTicker(pingInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				if err := a.conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(5*time.Second)); err != nil {
+					a.Logger.WithError(err).Error("failed to write ping message")
+				}
+			case <-a.stopPingCh:
+				a.Logger.Debug("stop ping message received")
+
+				return
+			}
+		}
+	}()
+
+	return a.pongCh
 }
 
 func (a *Adapter) Read(b []byte) (int, error) {
@@ -58,6 +145,10 @@ func (a *Adapter) Read(b []byte) (int, error) {
 		}
 	}
 
+	a.Logger.WithError(err).
+		WithField("bytes", bytesRead).
+		Trace("bytes read from wsconnadapter")
+
 	return bytesRead, err
 }
 
@@ -67,16 +158,34 @@ func (a *Adapter) Write(b []byte) (int, error) {
 
 	nextWriter, err := a.conn.NextWriter(websocket.BinaryMessage)
 	if err != nil {
+		a.Logger.WithError(err).Trace("failed to get the next writer")
+
 		return 0, err
 	}
 
 	bytesWritten, err := nextWriter.Write(b)
 	nextWriter.Close()
 
+	a.Logger.WithError(err).
+		WithField("bytes", bytesWritten).
+		Trace("bytes written from wsconnadapter")
+
 	return bytesWritten, err
 }
 
 func (a *Adapter) Close() error {
+	select {
+	case <-a.stopPingCh:
+		a.Logger.Debug("stop ping message received")
+	default:
+		if a.stopPingCh != nil {
+			a.stopPingCh <- struct{}{}
+			close(a.stopPingCh)
+
+			a.Logger.Debug("stop ping channel closed")
+		}
+	}
+
 	return a.conn.Close()
 }
 
@@ -90,6 +199,8 @@ func (a *Adapter) RemoteAddr() net.Addr {
 
 func (a *Adapter) SetDeadline(t time.Time) error {
 	if err := a.SetReadDeadline(t); err != nil {
+		a.Logger.WithError(err).Trace("failed to set the deadline")
+
 		return err
 	}
 

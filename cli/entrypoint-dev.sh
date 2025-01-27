@@ -1,5 +1,3 @@
 #!/bin/sh
 
-refresh run &
-
-sleep infinity
+exec air

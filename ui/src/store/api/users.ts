@@ -1,5 +1,5 @@
-import { IUSerRecoverPassword, IUser, IUserPutSecurity, IUserUpdatePassword, IUserSignUp } from "@/interfaces/IUSer";
-import { usersApi } from "../../api/http";
+import { IUser, IUserPutSecurity, IUserUpdatePassword, IUserSignUp, IUserSetup } from "@/interfaces/IUSer";
+import { usersApi, systemApi } from "../../api/http";
 
 export const signUp = async (data : IUserSignUp) => usersApi.registerUser({
   name: data.name,
@@ -7,6 +7,7 @@ export const signUp = async (data : IUserSignUp) => usersApi.registerUser({
   username: data.username,
   password: data.password,
   email_marketing: data.emailMarketing || false,
+  sig: data.sig,
 });
 
 export const postResendEmail = async (username : string) => usersApi.resendEmail({ username });
@@ -24,13 +25,35 @@ export const postUpdatePassword = async (data : IUserUpdatePassword) => usersApi
   password: data.password,
 });
 
-export const patchUserData = async (data : IUser) => usersApi.updateUserData(data.id, {
+export const patchUserData = async (data : IUser) => usersApi.updateUser({
   name: data.name,
   username: data.username,
   email: data.email,
+  recovery_email: data.recovery_email,
 });
 
-export const patchUserPassword = async (data : IUSerRecoverPassword) => usersApi.updateUserPassword(data.id, {
+export const patchUserPassword = async (data : IUser) => usersApi.updateUser({
+  name: data.name,
+  username: data.username,
+  email: data.email,
+  recovery_email: data.recovery_email,
   current_password: data.currentPassword,
-  new_password: data.newPassword,
+  password: data.newPassword,
 });
+
+export const premiumContent = async () => {
+  const response = await fetch("https://static.shellhub.io/premium-features.v1.json");
+  const data = await response.json();
+  return data;
+};
+
+export const getSamlLink = async () => usersApi.getSamlAuthUrl();
+
+export const setup = async (data: IUserSetup) => systemApi.setup(data.sign, {
+  name: data.name,
+  username: data.username,
+  email: data.email,
+  password: data.password,
+});
+
+export const getInfo = async () => systemApi.getInfo();

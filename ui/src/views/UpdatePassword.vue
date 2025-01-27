@@ -5,7 +5,7 @@
     </v-card-title>
 
     <v-card-text data-test="sub-text">
-      <div class="d-flex align-center justify-center text-center mb-6">
+      <div class="d-flex align-center justify-center text-center">
         Please insert your new password.
       </div>
     </v-card-text>
@@ -61,7 +61,7 @@
       Back to
       <router-link
         class="ml-1"
-        :to="{ name: 'login' }"
+        :to="{ name: 'Login' }"
       >
         Login
       </router-link>
@@ -103,8 +103,8 @@ const {
   yup
     .string()
     .required()
-    .min(5, "Your password should be 5-30 characters long")
-    .max(30, "Your password should be 5-30 characters long"),
+    .min(5, "Your password should be 5-32 characters long")
+    .max(32, "Your password should be 5-32 characters long"),
   {
     initialValue: "",
   },
@@ -178,7 +178,7 @@ const updatePassword = async () => {
       password: password.value,
     };
     await store.dispatch("users/updatePassword", data.value);
-    await router.push({ name: "login" });
+    await router.push({ name: "Login" });
     store.dispatch(
       "snackbar/showSnackbarSuccessAction",
       INotificationsSuccess.updatingAccount,

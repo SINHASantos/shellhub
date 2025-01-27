@@ -1,8 +1,13 @@
 package requests
 
+import (
+	"github.com/shellhub-io/shellhub/pkg/api/authorizer"
+	"github.com/shellhub-io/shellhub/pkg/api/query"
+)
+
 // TenantParam is a structure to represent and validate a namespace tenant as path param.
 type TenantParam struct {
-	Tenant string `param:"tenant" validate:"required,min=3,max=255,ascii,excludes=/@&:"`
+	Tenant string `param:"tenant" validate:"required,uuid"`
 }
 
 // RoleBody is a structure to represent and validate a namespace role as request body.
@@ -16,9 +21,17 @@ type MemberParam struct {
 }
 
 // NamespaceCreate is the structure to represent the request data for create namespace endpoint.
+type NamespaceList struct {
+	query.Paginator
+	query.Filters
+}
+
+// NamespaceCreate is the structure to represent the request data for create namespace endpoint.
 type NamespaceCreate struct {
+	UserID   string `header:"X-ID" validate:"required"`
 	Name     string `json:"name"  validate:"required,hostname_rfc1123,excludes=."`
-	TenantID string `json:"tenant" validate:"min=3,max=255,ascii,excludes=/@&:"`
+	TenantID string `json:"tenant" validate:"omitempty,uuid"`
+	Type     string `json:"type" validate:"omitempty,lowercase,oneof=personal team"`
 }
 
 // NamespaceGet is the structure to represent the request data for get namespace endpoint.
@@ -34,27 +47,40 @@ type NamespaceDelete struct {
 // NamespaceEdit is the structure to represent the request data for edit namespace endpoint.
 type NamespaceEdit struct {
 	TenantParam
-	Name string `json:"name"  validate:"required,hostname_rfc1123,excludes=."`
+	Name     string `json:"name" validate:"omitempty,hostname_rfc1123,excludes=."`
+	Settings struct {
+		SessionRecord          *bool   `json:"session_record" validate:"omitempty"`
+		ConnectionAnnouncement *string `json:"connection_announcement" validate:"omitempty,min=0,max=4096"`
+	} `json:"settings"`
 }
 
-// NamespaceAddUser is the structure to represent the request data for add member to namespace endpoint.
-type NamespaceAddUser struct {
-	TenantParam
-	Username string `json:"username" validate:"required"`
-	RoleBody
+type NamespaceAddMember struct {
+	FowardedHost string          `header:"X-Forwarded-Host" validate:"required"`
+	UserID       string          `header:"X-ID" validate:"required"`
+	TenantID     string          `param:"tenant" validate:"required,uuid"`
+	MemberEmail  string          `json:"email" validate:"required"`
+	MemberRole   authorizer.Role `json:"role" validate:"required,member_role"`
 }
 
-// NamespaceRemoveUser is the structure to represent the request data for remove member from namespace endpoint.
-type NamespaceRemoveUser struct {
-	TenantParam
-	MemberParam
+type NamespaceUpdateMember struct {
+	UserID     string          `header:"X-ID" validate:"required"`
+	TenantID   string          `param:"tenant" validate:"required,uuid"`
+	MemberID   string          `param:"uid" validate:"required"`
+	MemberRole authorizer.Role `json:"role" validate:"omitempty,member_role"`
 }
 
-// NamespaceEditUser is the structure to represent the request data for edit member from namespace endpoint.
-type NamespaceEditUser struct {
-	TenantParam
-	MemberParam
-	RoleBody
+type NamespaceRemoveMember struct {
+	UserID   string `header:"X-ID" validate:"required"`
+	TenantID string `param:"tenant" validate:"required,uuid"`
+	MemberID string `param:"uid" validate:"required"`
+}
+
+type LeaveNamespace struct {
+	UserID string `header:"X-ID" validate:"required"`
+	// TenantID represents the namespace that the user intends to leave.
+	TenantID string `param:"tenant" validate:"required,uuid"`
+	// AuthenticatedTenantID represents the namespace to which the user is currently authenticated.
+	AuthenticatedTenantID string `header:"X-Tenant-ID" validate:"required"`
 }
 
 // SessionEditRecordStatus is the structure to represent the request data for edit session record status endpoint.

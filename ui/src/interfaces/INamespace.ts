@@ -8,6 +8,7 @@ export interface INamespaceMember {
 
 export interface settings {
   session_record: boolean;
+  connection_announcement: string;
 }
 
 export interface INamespace {
@@ -20,4 +21,23 @@ export interface INamespace {
   devices_count: number;
   created_at: string;
   billing: IBilling;
+}
+
+export interface INamespaceInvite {
+  tenant: string;
+  sig: string;
+}
+
+export interface INamespaceSettings {
+  connection_announcement: string;
+  session_record: boolean;
+}
+export interface INamespaceResponse {
+  settings: INamespaceSettings;
+  id: string;
+  tenant_id: string;
+  name: string;
+  user_id: string;
+  email: string;
+  role: "administrator" | "operator" | "observer" | "owner";
 }

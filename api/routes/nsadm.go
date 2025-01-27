@@ -1,15 +1,11 @@
 package routes
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"net/http"
 	"strconv"
 
 	"github.com/shellhub-io/shellhub/api/pkg/gateway"
-	"github.com/shellhub-io/shellhub/api/pkg/guard"
 	"github.com/shellhub-io/shellhub/pkg/api/requests"
-	"github.com/shellhub-io/shellhub/pkg/models"
 )
 
 const (
@@ -18,9 +14,10 @@ const (
 	GetNamespaceURL            = "/namespaces/:tenant"
 	DeleteNamespaceURL         = "/namespaces/:tenant"
 	EditNamespaceURL           = "/namespaces/:tenant"
-	AddNamespaceUserURL        = "/namespaces/:tenant/members"
-	RemoveNamespaceUserURL     = "/namespaces/:tenant/members/:uid"
-	EditNamespaceUserURL       = "/namespaces/:tenant/members/:uid"
+	LeaveNamespaceURL          = "/namespaces/:tenant/members"
+	AddNamespaceMemberURL      = "/namespaces/:tenant/members"
+	RemoveNamespaceMemberURL   = "/namespaces/:tenant/members/:uid"
+	EditNamespaceMemberURL     = "/namespaces/:tenant/members/:uid"
 	GetSessionRecordURL        = "/users/security"
 	EditSessionRecordStatusURL = "/users/security/:tenant"
 )
@@ -31,22 +28,22 @@ const (
 )
 
 func (h *Handler) GetNamespaceList(c gateway.Context) error {
-	query := filterQuery{}
-	if err := c.Bind(&query); err != nil {
+	req := new(requests.NamespaceList)
+
+	if err := c.Bind(req); err != nil {
 		return err
 	}
 
-	raw, err := base64.StdEncoding.DecodeString(query.Filter)
-	if err != nil {
+	req.Paginator.Normalize()
+	if err := req.Filters.Unmarshal(); err != nil {
 		return err
 	}
 
-	var filter []models.Filter
-	if err := json.Unmarshal(raw, &filter); len(raw) > 0 && err != nil {
+	if err := c.Validate(req); err != nil {
 		return err
 	}
 
-	namespaces, count, err := h.service.ListNamespaces(c.Ctx(), query.Query, filter, false)
+	namespaces, count, err := h.service.ListNamespaces(c.Ctx(), req)
 	if err != nil {
 		return err
 	}
@@ -57,17 +54,17 @@ func (h *Handler) GetNamespaceList(c gateway.Context) error {
 }
 
 func (h *Handler) CreateNamespace(c gateway.Context) error {
-	var req requests.NamespaceCreate
-	if err := c.Bind(&req); err != nil {
+	req := new(requests.NamespaceCreate)
+
+	if err := c.Bind(req); err != nil {
 		return err
 	}
 
-	var userID string
-	if v := c.ID(); v != nil {
-		userID = v.ID
+	if err := c.Validate(req); err != nil {
+		return err
 	}
 
-	namespace, err := h.service.CreateNamespace(c.Ctx(), req, userID)
+	namespace, err := h.service.CreateNamespace(c.Ctx(), req)
 	if err != nil {
 		return err
 	}
@@ -96,8 +93,7 @@ func (h *Handler) GetNamespace(c gateway.Context) error {
 	}
 
 	if uid != "" {
-		_, ok := guard.CheckMember(ns, uid)
-		if !ok {
+		if _, ok := ns.FindMember(uid); !ok {
 			return c.NoContent(http.StatusForbidden)
 		}
 	}
@@ -115,22 +111,7 @@ func (h *Handler) DeleteNamespace(c gateway.Context) error {
 		return err
 	}
 
-	var uid string
-	if c.ID() != nil {
-		uid = c.ID().ID
-	}
-
-	ns, err := h.service.GetNamespace(c.Ctx(), req.Tenant)
-	if err != nil || ns == nil {
-		return c.NoContent(http.StatusNotFound)
-	}
-
-	err = guard.EvaluateNamespace(ns, uid, guard.Actions.Namespace.Delete, func() error {
-		err := h.service.DeleteNamespace(c.Ctx(), ns.TenantID)
-
-		return err
-	})
-	if err != nil {
+	if err := h.service.DeleteNamespace(c.Ctx(), req.Tenant); err != nil {
 		return err
 	}
 
@@ -138,133 +119,96 @@ func (h *Handler) DeleteNamespace(c gateway.Context) error {
 }
 
 func (h *Handler) EditNamespace(c gateway.Context) error {
-	var req requests.NamespaceEdit
-	if err := c.Bind(&req); err != nil {
+	req := new(requests.NamespaceEdit)
+
+	if err := c.Bind(req); err != nil {
 		return err
 	}
 
-	if err := c.Validate(&req); err != nil {
+	if err := c.Validate(req); err != nil {
 		return err
 	}
 
-	var uid string
-	if c.ID() != nil {
-		uid = c.ID().ID
-	}
-
-	namespace, err := h.service.GetNamespace(c.Ctx(), req.Tenant)
-	if err != nil || namespace == nil {
-		return c.NoContent(http.StatusNotFound)
-	}
-
-	var nns *models.Namespace
-	err = guard.EvaluateNamespace(namespace, uid, guard.Actions.Namespace.Rename, func() error {
-		var err error
-		nns, err = h.service.EditNamespace(c.Ctx(), namespace.TenantID, req.Name)
-
-		return err
-	})
+	res, err := h.service.EditNamespace(c.Ctx(), req)
 	if err != nil {
 		return err
 	}
 
-	return c.JSON(http.StatusOK, nns)
+	return c.JSON(http.StatusOK, res)
 }
 
-func (h *Handler) AddNamespaceUser(c gateway.Context) error {
-	var req requests.NamespaceAddUser
-	if err := c.Bind(&req); err != nil {
+func (h *Handler) AddNamespaceMember(c gateway.Context) error {
+	req := new(requests.NamespaceAddMember)
+
+	if err := c.Bind(req); err != nil {
 		return err
 	}
 
-	if err := c.Validate(&req); err != nil {
+	if err := c.Validate(req); err != nil {
 		return err
 	}
 
-	var uid string
-	if c.ID() != nil {
-		uid = c.ID().ID
-	}
-
-	ns, err := h.service.GetNamespace(c.Ctx(), req.Tenant)
-	if err != nil || ns == nil {
-		return c.NoContent(http.StatusNotFound)
-	}
-
-	var namespace *models.Namespace
-	err = guard.EvaluateNamespace(ns, uid, guard.Actions.Namespace.AddMember, func() error {
-		var err error
-		namespace, err = h.service.AddNamespaceUser(c.Ctx(), req.Username, req.Role, ns.TenantID, uid)
-
-		return err
-	})
+	res, err := h.service.AddNamespaceMember(c.Ctx(), req)
 	if err != nil {
 		return err
 	}
 
-	return c.JSON(http.StatusOK, namespace)
+	return c.JSON(http.StatusOK, res)
 }
 
-func (h *Handler) RemoveNamespaceUser(c gateway.Context) error {
-	var req requests.NamespaceRemoveUser
-	if err := c.Bind(&req); err != nil {
+func (h *Handler) RemoveNamespaceMember(c gateway.Context) error {
+	req := new(requests.NamespaceRemoveMember)
+
+	if err := c.Bind(req); err != nil {
 		return err
 	}
 
-	if err := c.Validate(&req); err != nil {
+	if err := c.Validate(req); err != nil {
 		return err
 	}
 
-	var uid string
-	if v := c.ID(); v != nil {
-		uid = c.ID().ID
-	}
-
-	ns, err := h.service.GetNamespace(c.Ctx(), req.Tenant)
-	if err != nil || ns == nil {
-		return c.NoContent(http.StatusNotFound)
-	}
-
-	var nns *models.Namespace
-	err = guard.EvaluateNamespace(ns, uid, guard.Actions.Namespace.RemoveMember, func() error {
-		var err error
-		nns, err = h.service.RemoveNamespaceUser(c.Ctx(), ns.TenantID, req.MemberUID, uid)
-
-		return err
-	})
+	res, err := h.service.RemoveNamespaceMember(c.Ctx(), req)
 	if err != nil {
 		return err
 	}
 
-	return c.JSON(http.StatusOK, nns)
+	return c.JSON(http.StatusOK, res)
 }
 
-func (h *Handler) EditNamespaceUser(c gateway.Context) error {
-	var req requests.NamespaceEditUser
-	if err := c.Bind(&req); err != nil {
+func (h *Handler) LeaveNamespace(c gateway.Context) error {
+	req := new(requests.LeaveNamespace)
+
+	if err := c.Bind(req); err != nil {
 		return err
 	}
 
-	if err := c.Validate(&req); err != nil {
+	if err := c.Validate(req); err != nil {
 		return err
 	}
 
-	var uid string
-	if c.ID() != nil {
-		uid = c.ID().ID
-	}
-
-	ns, err := h.service.GetNamespace(c.Ctx(), req.Tenant)
-	if err != nil || ns == nil {
-		return c.NoContent(http.StatusNotFound)
-	}
-
-	err = guard.EvaluateNamespace(ns, uid, guard.Actions.Namespace.EditMember, func() error {
-		err := h.service.EditNamespaceUser(c.Ctx(), ns.TenantID, uid, req.MemberUID, req.Role)
-
+	res, err := h.service.LeaveNamespace(c.Ctx(), req)
+	switch {
+	case err != nil:
 		return err
-	})
-	if err != nil {
+	case res != nil:
+		return c.JSON(http.StatusOK, res)
+	default:
+		return c.NoContent(http.StatusOK)
+	}
+}
+
+func (h *Handler) EditNamespaceMember(c gateway.Context) error {
+	req := new(requests.NamespaceUpdateMember)
+
+	if err := c.Bind(req); err != nil {
+		return err
+	}
+
+	if err := c.Validate(req); err != nil {
+		return err
+	}
+
+	if err := h.service.UpdateNamespaceMember(c.Ctx(), req); err != nil {
 		return err
 	}
 
@@ -281,22 +225,7 @@ func (h *Handler) EditSessionRecordStatus(c gateway.Context) error {
 		return err
 	}
 
-	var uid string
-	if c.ID() != nil {
-		uid = c.ID().ID
-	}
-
-	ns, err := h.service.GetNamespace(c.Ctx(), req.Tenant)
-	if err != nil || ns == nil {
-		return c.NoContent(http.StatusNotFound)
-	}
-
-	err = guard.EvaluateNamespace(ns, uid, guard.Actions.Namespace.EnableSessionRecord, func() error {
-		err := h.service.EditSessionRecordStatus(c.Ctx(), req.SessionRecord, ns.TenantID)
-
-		return err
-	})
-	if err != nil {
+	if err := h.service.EditSessionRecordStatus(c.Ctx(), req.SessionRecord, req.Tenant); err != nil {
 		return err
 	}
 

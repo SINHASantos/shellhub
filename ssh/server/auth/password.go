@@ -1,49 +1,42 @@
 package auth
 
 import (
-	"github.com/gliderlabs/ssh"
-	"github.com/shellhub-io/shellhub/pkg/api/internalclient"
-	"github.com/shellhub-io/shellhub/ssh/pkg/metadata"
+	"net"
+
+	gliderssh "github.com/gliderlabs/ssh"
+	"github.com/shellhub-io/shellhub/ssh/session"
 	log "github.com/sirupsen/logrus"
 )
 
-// PasswordHandler handles ShellHub client`s connection using password authentication method.
-// PasswordHandler authentication is the second authentication method tried by the server to connect the client to agent.
-//
-// It receives the password from the client and tries to authenticate it.
-//
-// Returns true if the password authentication method is used and false otherwise.
-// PasswordHandler authentication is last method tried by the server to connect the client to agent.
-func PasswordHandler(ctx ssh.Context, password string) bool {
-	sshid := metadata.MaybeStoreSSHID(ctx, ctx.User())
+// PasswordHandler handles ShellHub client's connection using the password authentication method.
+func PasswordHandler(ctx gliderssh.Context, passwd string) bool {
+	logger := log.WithFields(
+		log.Fields{
+			"uid":   ctx.SessionID(),
+			"sshid": ctx.User(),
+		})
 
-	log.WithFields(log.Fields{
-		"sshid": sshid,
-	}).Trace("trying to use password authentication")
+	logger.Trace("trying to use password authentication")
 
-	tag, err := metadata.MaybeStoreTarget(ctx, sshid)
-	if err != nil {
+	sess, state := session.ObtainSession(ctx)
+	if state < session.StateEvaluated {
+		logger.Trace("failed to get the session from context on password handler")
+
+		conn, ok := ctx.Value("conn").(net.Conn)
+		if ok {
+			conn.Close()
+		}
+
 		return false
 	}
 
-	api := metadata.MaybeSetAPI(ctx, internalclient.NewClient())
+	if err := sess.Auth(ctx, session.AuthPassword(passwd)); err != nil {
+		logger.Warn("failed to authenticate on device using password")
 
-	lookup, err := metadata.MaybeStoreLookup(ctx, tag, api)
-	if err != nil {
 		return false
 	}
 
-	_, errs := metadata.MaybeStoreDevice(ctx, lookup, api)
-	if len(errs) > 0 {
-		return false
-	}
-
-	metadata.StorePassword(ctx, password)
-	metadata.StoreAuthenticationMethod(ctx, metadata.PasswordAuthenticationMethod)
-
-	log.WithFields(log.Fields{
-		"sshid": sshid,
-	}).Info("using password authentication method to connect the client to agent")
+	logger.Info("succeeded to use password authentication.")
 
 	return true
 }

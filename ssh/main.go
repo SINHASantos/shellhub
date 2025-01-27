@@ -1,129 +1,101 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"fmt"
-	"io"
 	"net/http"
+	"runtime"
+	"time"
 
-	"github.com/kelseyhightower/envconfig"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo-contrib/pprof"
+	"github.com/shellhub-io/shellhub/pkg/cache"
+	"github.com/shellhub-io/shellhub/pkg/envs"
 	"github.com/shellhub-io/shellhub/pkg/loglevel"
-	sshTunnel "github.com/shellhub-io/shellhub/ssh/pkg/tunnel"
+	"github.com/shellhub-io/shellhub/ssh/pkg/tunnel"
 	"github.com/shellhub-io/shellhub/ssh/server"
-	"github.com/shellhub-io/shellhub/ssh/server/handler"
 	"github.com/shellhub-io/shellhub/ssh/web"
-	"github.com/shellhub-io/shellhub/ssh/web/pkg/cache"
 	log "github.com/sirupsen/logrus"
 )
 
+const ListenAddress = ":8080"
+
 func init() {
 	loglevel.SetLogLevel()
+	log.SetFormatter(&log.JSONFormatter{})
+}
+
+type Envs struct {
+	ConnectTimeout time.Duration `env:"CONNECT_TIMEOUT,default=30s"`
+	RedisURI       string        `env:"REDIS_URI,default=redis://redis:6379"`
+	RecordURL      string        `env:"RECORD_URL,default=cloud-api:8080"`
+	// Allows SSH to connect with an agent via a public key when the agent version is less than 0.6.0.
+	// Agents 0.5.x or earlier do not validate the public key request and may panic.
+	// Please refer to: https://github.com/shellhub-io/shellhub/issues/3453
+	AllowPublickeyAccessBelow060 bool `env:"ALLOW_PUBLIC_KEY_ACCESS_BELLOW_0_6_0,default=false"`
 }
 
 func main() {
-	// Populates configuration based on environment variables prefixed with 'SSH_'
-	var opts server.Options
-	if err := envconfig.Process("ssh", &opts); err != nil {
+	// Populates configuration based on environment variables prefixed with 'SSH_'.
+	env, err := envs.ParseWithPrefix[Envs]("SSH_")
+	if err != nil {
 		log.WithError(err).Fatal("Failed to load environment variables")
 	}
 
-	if err := cache.ConnectRedis(opts.RedisURI); err != nil {
-		log.WithError(err).Fatal("Failed to connect to redis")
+	cache, err := cache.NewRedisCache(env.RedisURI, 0)
+	if err != nil {
+		log.WithError(err).
+			Fatal("failed to connect to redis cache")
 	}
 
-	tunnel := sshTunnel.NewTunnel("/ssh/connection", "/ssh/revdial")
+	tun, err := tunnel.NewTunnel("/ssh/connection", "/ssh/revdial", env.RedisURI)
+	if err != nil {
+		log.WithError(err).
+			Fatal("failed to create the internalclient")
+	}
 
-	router := tunnel.GetRouter()
-	router.Any("/sessions/:uid/close", func(c echo.Context) error {
-		exit := func(status int, err error) error {
-			log.WithError(err).WithField("status", status).Error("failed to close the session")
+	router := tun.GetRouter()
 
-			return c.JSON(status, err.Error())
-		}
+	web.NewSSHServerBridge(router, cache)
 
-		uid := c.Param("uid")
-		var closeRequest struct {
-			Device string `json:"device"`
-		}
-		if err := c.Bind(&closeRequest); err != nil {
-			return exit(http.StatusBadRequest, err)
-		}
+	if envs.IsDevelopment() {
+		runtime.SetBlockProfileRate(1)
+		pprof.Register(router)
 
-		conn, err := tunnel.Dial(context.Background(), closeRequest.Device)
-		if err != nil {
-			return exit(http.StatusInternalServerError, err)
-		}
+		log.Info("Profiling enabled at http://0.0.0.0:8080/debug/pprof/")
+	}
 
-		req, err := http.NewRequest(http.MethodDelete, fmt.Sprintf("/ssh/close/%s", uid), nil)
-		if err != nil {
-			return exit(http.StatusInternalServerError, err)
-		}
+	errs := make(chan error)
 
-		if err := req.Write(conn); err != nil {
-			return exit(http.StatusInternalServerError, err)
-		}
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Debugf("listen for HTTP server on %s paniced", ListenAddress)
 
-		return c.NoContent(http.StatusOK)
-	})
+				errs <- fmt.Errorf("listen for HTTP on %s paniced", ListenAddress)
+			}
+		}()
 
-	router.Any("/ssh/http", func(c echo.Context) error {
-		replyError := func(err error, msg string, code int) error {
-			log.WithError(err).WithFields(log.Fields{
-				"remote":  c.Request().RemoteAddr,
-				"address": c.Request().Header.Get("X-Public-Address"),
-				"path":    c.Request().Header.Get("X-Path"),
-			}).Error(msg)
+		errs <- http.ListenAndServe(ListenAddress, router) //nolint:gosec
+	}()
 
-			return c.String(code, msg)
-		}
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Debugf("listen for SSH server paniced")
 
-		dev, err := tunnel.API.GetDeviceByPublicURLAddress(c.Request().Header.Get("X-Public-URL-Address"))
-		if err != nil {
-			return replyError(err, "failed to get device data", http.StatusInternalServerError)
-		}
+				errs <- fmt.Errorf("listen for SSH server paniced")
+			}
+		}()
 
-		if !dev.PublicURL {
-			return replyError(err, "this device is not accessible via public URL", http.StatusForbidden)
-		}
+		errs <- server.NewServer(&server.Options{
+			ConnectTimeout:               env.ConnectTimeout,
+			RecordURL:                    env.RecordURL,
+			AllowPublickeyAccessBelow060: env.AllowPublickeyAccessBelow060,
+		}, tun.Tunnel, cache).ListenAndServe()
+	}()
 
-		in, err := tunnel.Dial(c.Request().Context(), dev.UID)
-		if err != nil {
-			return replyError(err, "failed to connect to device", http.StatusInternalServerError)
-		}
+	if err := <-errs; err != nil {
+		log.WithError(err).Fatal("a fatal error was send from HTTP or SSH server")
+	}
 
-		defer in.Close()
-
-		if err := c.Request().Write(in); err != nil {
-			return replyError(err, "failed to write request to device", http.StatusInternalServerError)
-		}
-
-		ctr := http.NewResponseController(c.Response())
-		out, _, err := ctr.Hijack()
-		if err != nil {
-			return replyError(err, "failed to hijack response", http.StatusInternalServerError)
-		}
-
-		defer out.Close()
-		if _, err := io.Copy(out, in); errors.Is(err, io.ErrUnexpectedEOF) {
-			return replyError(err, "failed to copy response from device service to client", http.StatusInternalServerError)
-		}
-
-		return nil
-	})
-
-	// TODO: add `/ws/ssh` route to OpenAPI repository.
-	router.GET("/ws/ssh", echo.WrapHandler(web.HandlerRestoreSession(web.RestoreSession, handler.WebSession)))
-	router.POST("/ws/ssh", echo.WrapHandler(http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
-		web.HandlerCreateSession(web.CreateSession)(res, req)
-	})))
-
-	router.GET("/healthcheck", func(c echo.Context) error {
-		return c.String(http.StatusOK, "OK")
-	})
-
-	go http.ListenAndServe(":8080", router) // nolint:errcheck
-
-	log.Fatal(server.NewServer(&opts, tunnel.Tunnel).ListenAndServe())
+	log.Warn("ssh service is closed")
 }

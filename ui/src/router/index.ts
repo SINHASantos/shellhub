@@ -1,33 +1,144 @@
-import { RouteRecordRaw, createRouter, createWebHistory } from "vue-router";
+/* eslint-disable camelcase */
+import { RouteRecordRaw, createRouter, createWebHistory, RouteLocationNormalized, NavigationGuardNext } from "vue-router";
 import { envVariables } from "../envVariables";
 import { store } from "@/store";
+import { INotificationsError } from "@/interfaces/INotifications";
 
-const Dashboard = () => import(/* webpackChunkName: "dashboard" */ "@/views/Dashboard.vue");
-const Devices = () => import(/* webpackChunkName: "devices" */ "@/views/Devices.vue");
-const DeviceList = () => import(/* webpackChunkName: "devices" */ "@/components/Devices/DeviceList.vue");
-const DevicePendingList = () => import(/* webpackChunkName: "devices" */ "@/components/Devices/DevicePendingList.vue");
-const DeviceRejectedList = () => import(/* webpackChunkName: "devices" */ "@/components/Devices/DeviceRejectedList.vue");
-const DetailsDevice = () => import(/* webpackChunkName: "device" */ "@/views/DetailsDevice.vue");
-const Sessions = () => import(/* webpackChunkName: "sessions" */ "@/views/Sessions.vue");
-const DetailsSessions = () => import(/* webpackChunkName: "sessions" */ "@/views/DetailsSessions.vue");
-const FirewallRules = () => import(/* webpackChunkName: "firewall-rules" */ "@/views/FirewallRules.vue");
-const PublicKeys = () => import(/* webpackChunkName: "public-keys" */ "@/views/PublicKeys.vue");
-const Settings = () => import(/* webpackChunkName: "settings" */ "@/views/Settings.vue");
-const SettingProfile = () => import(/* webpackChunkName: "settings" */ "@/components/Setting/SettingProfile.vue");
-const SettingNamespace = () => import(/* webpackChunkName: "settings" */ "@/components/Setting/SettingNamespace.vue");
-const SettingPrivateKeys = () => import(/* webpackChunkName: "settings" */ "@/components/Setting/SettingPrivateKeys.vue");
-const SettingTags = () => import(/* webpackChunkName: "settings" */ "@/components/Setting/SettingTags.vue");
-const SettingBilling = () => import(/* webpackChunkName: "settings" */ "@/components/Setting/SettingBilling.vue");
+export const handleAcceptInvite = async (to: RouteLocationNormalized, from: RouteLocationNormalized, next: NavigationGuardNext) => {
+  try {
+    await store.dispatch("namespaces/lookupUserStatus", {
+      tenant: to.query["tenant-id"] || from.query["tenant-id"],
+      id: to.query["user-id"] || from.query["user-id"],
+      sig: to.query.sig || from.query.sig,
+    });
+    const userStatus = store.getters["namespaces/getUserStatus"];
+    const isLoggedIn = store.getters["auth/isLoggedIn"];
+
+    switch (userStatus) {
+      case "invited":
+        next({
+          path: "/sign-up",
+          query: { redirect: to.path, ...to.query },
+        });
+        return;
+      case "not-confirmed":
+        next({
+          path: "/login",
+          query: { redirect: "/accept-invite", ...to.query },
+        });
+        return;
+      case "confirmed":
+        if (!isLoggedIn) {
+          next({
+            path: "/login",
+            query: { redirect: "/accept-invite", ...to.query },
+          });
+          return;
+        }
+        next();
+        break;
+      default:
+        break;
+    }
+    next();
+  } catch (error) {
+    store.dispatch(
+      "snackbar/showSnackbarErrorLoading",
+      INotificationsError.routeAcceptInvite,
+    );
+    next({ name: "Login" });
+  }
+};
+
+const Home = () => import("@/views/Home.vue");
+const Devices = () => import("@/views/Devices.vue");
+const DeviceList = () => import("@/components/Devices/DeviceList.vue");
+const DevicePendingList = () => import("@/components/Devices/DevicePendingList.vue");
+const DeviceRejectedList = () => import("@/components/Devices/DeviceRejectedList.vue");
+const Containers = () => import("@/views/Containers.vue");
+const ContainerList = () => import("@/components/Containers/ContainerList.vue");
+const ContainerPendingList = () => import("@/components/Containers/ContainerPendingList.vue");
+const ContainerRejectedList = () => import("@/components/Containers/ContainerRejectedList.vue");
+const Connectors = () => import("@/views/Connectors.vue");
+const ConnectorDetails = () => import("@/views/ConnectorDetails.vue");
+const DeviceDetails = () => import("@/views/DetailsDevice.vue");
+const Sessions = () => import("@/views/Sessions.vue");
+const SessionDetails = () => import("@/views/DetailsSessions.vue");
+const FirewallRules = () => import("@/views/FirewallRules.vue");
+const PublicKeys = () => import("@/views/PublicKeys.vue");
+const AcceptInvite = () => import("@/views/NamespaceInviteCard.vue");
+const Settings = () => import("@/views/Settings.vue");
+const SettingProfile = () => import("@/components/Setting/SettingProfile.vue");
+const SettingNamespace = () => import("@/components/Setting/SettingNamespace.vue");
+const SettingPrivateKeys = () => import("@/components/Setting/SettingPrivateKeys.vue");
+const SettingTags = () => import("@/components/Setting/SettingTags.vue");
+const SettingBilling = () => import("@/components/Setting/SettingBilling.vue");
+const TeamMembers = () => import("@/views/TeamMembers.vue");
+const TeamApiKeys = () => import("@/views/TeamApiKeys.vue");
 
 export const routes: Array<RouteRecordRaw> = [
   {
     path: "/login",
-    name: "login",
+    name: "Login",
     meta: {
       layout: "LoginLayout",
       requiresAuth: false,
     },
-    component: () => import(/* webpackChunkName: "login" */ "../views/Login.vue"),
+    beforeEnter: (to, from, next) => {
+      if (envVariables.isCommunity && !store.getters["users/getSystemInfo"].setup) {
+        next({ name: "Setup" });
+      }
+      next();
+    },
+    component: () => import("../views/Login.vue"),
+  },
+  {
+    path: "/mfa-login",
+    name: "MfaLogin",
+    beforeEnter: (to, from, next) => {
+      if (from.name === "Login") {
+        next();
+      } else {
+        next({ name: "Login" });
+      }
+    },
+    meta: {
+      layout: "LoginLayout",
+      requiresAuth: false,
+    },
+    component: () => import("../views/MfaLogin.vue"),
+  },
+  {
+    path: "/recover-mfa",
+    name: "RecoverMfa",
+    beforeEnter: (to, from, next) => {
+      if (from.name === "MfaLogin") {
+        next();
+      } else {
+        next({ name: "Login" });
+      }
+    },
+    meta: {
+      layout: "LoginLayout",
+      requiresAuth: false,
+    },
+    component: () => import("../components/AuthMFA/MfaRecover.vue"),
+  },
+  {
+    path: "/recover-mfa/mail-sucessful",
+    name: "RecoverMfaMsg",
+    beforeEnter: (to, from, next) => {
+      if (from.name === "RecoverMfa") {
+        next();
+      } else {
+        next({ name: "Login" });
+      }
+    },
+    meta: {
+      layout: "LoginLayout",
+      requiresAuth: false,
+    },
+    component: () => import("../components/AuthMFA/MfaMailRecover.vue"),
   },
   {
     path: "/forgot-pass",
@@ -36,7 +147,7 @@ export const routes: Array<RouteRecordRaw> = [
       layout: "LoginLayout",
       requiresAuth: false,
     },
-    component: () => import(/* webpackChunkName: "forgot-password" */ "../views/ForgotPassword.vue"),
+    component: () => import("../views/ForgotPassword.vue"),
   },
   {
     path: "/validation-account",
@@ -45,7 +156,16 @@ export const routes: Array<RouteRecordRaw> = [
       layout: "LoginLayout",
       requiresAuth: false,
     },
-    component: () => import(/* webpackChunkName: "validation-account" */ "../views/ValidationAccount.vue"),
+    component: () => import("../views/ValidationAccount.vue"),
+  },
+  {
+    path: "/reset-mfa",
+    name: "MfaResetValidation",
+    meta: {
+      layout: "LoginLayout",
+      requiresAuth: false,
+    },
+    component: () => import("../views/MfaResetValidation.vue"),
   },
   {
     path: "/update-password",
@@ -54,16 +174,37 @@ export const routes: Array<RouteRecordRaw> = [
       layout: "LoginLayout",
       requiresAuth: false,
     },
-    component: () => import(/* webpackChunkName: "update-password" */ "../views/UpdatePassword.vue"),
+    component: () => import("../views/UpdatePassword.vue"),
   },
   {
     path: "/sign-up",
     name: "SignUp",
+    beforeEnter: (to, from, next) => {
+      if (envVariables.isCommunity && !store.getters["users/getSystemInfo"].setup) {
+        next({ name: "Setup" });
+      }
+      next();
+    },
     meta: {
       layout: "LoginLayout",
       requiresAuth: false,
     },
-    component: () => import(/* webpackChunkName: "sign-up" */ "../views/SignUp.vue"),
+    component: () => import("../views/SignUp.vue"),
+  },
+  {
+    path: "/setup",
+    name: "Setup",
+    meta: {
+      layout: "LoginLayout",
+      requiresAuth: false,
+    },
+    beforeEnter: (to, from, next) => {
+      if (!envVariables.isCommunity || store.getters["users/getSystemInfo"].setup) {
+        next({ name: "Login" });
+      }
+      next();
+    },
+    component: () => import("../views/Setup.vue"),
   },
   {
     path: "/confirm-account",
@@ -72,42 +213,109 @@ export const routes: Array<RouteRecordRaw> = [
       layout: "LoginLayout",
       requiresAuth: false,
     },
-    component: () => import(/* webpackChunkName: "confirm-account" */ "../views/ConfirmAccount.vue"),
+    component: () => import("../views/ConfirmAccount.vue"),
+  },
+  {
+    path: "/accept-invite",
+    name: "AcceptInvite",
+    component: AcceptInvite,
+    beforeEnter: handleAcceptInvite,
+    meta: {
+      layout: "LoginLayout",
+      requiresAuth: false,
+    },
   },
   {
     path: "/",
-    name: "Dashboard",
-    component: Dashboard,
+    name: "Home",
+    component: Home,
   },
   {
     path: "/devices",
-    name: "devices",
+    name: "Devices",
     component: Devices,
-    redirect: {
-      name: "listDevices",
+    beforeEnter: async (to, from, next) => {
+      await store.dispatch("devices/fetch", {
+        page: store.getters["devices/getPage"],
+        perPage: store.getters["devices/getPerPage"],
+        filter: store.getters["devices/getFilter"],
+        status: "",
+        committable: false,
+      });
+      next();
     },
+    redirect: { name: "DeviceList" },
     children: [
       {
         path: "",
-        name: "listDevices",
+        name: "DeviceList",
         component: DeviceList,
       },
       {
         path: "pending",
-        name: "pendingDevices",
+        name: "DevicePendingList",
         component: DevicePendingList,
       },
       {
         path: "rejected",
-        name: "rejectedDevices",
+        name: "DeviceRejectedList",
         component: DeviceRejectedList,
       },
     ],
   },
   {
-    path: "/device/:id",
-    name: "detailsDevice",
-    component: DetailsDevice,
+    path: "/containers",
+    name: "Containers",
+    component: Containers,
+    beforeEnter: async (to, from, next) => {
+      await store.dispatch("container/fetch", {
+        page: store.getters["container/getPage"],
+        perPage: store.getters["container/getPerPage"],
+        filter: store.getters["container/getFilter"],
+        status: "",
+        committable: false,
+      });
+      next();
+    },
+    redirect: { name: "ContainerList" },
+    children: [
+      {
+        path: "",
+        name: "ContainerList",
+        component: ContainerList,
+      },
+      {
+        path: "pending",
+        name: "ContainerPendingList",
+        component: ContainerPendingList,
+      },
+      {
+        path: "rejected",
+        name: "ContainerRejectedList",
+        component: ContainerRejectedList,
+      },
+    ],
+  },
+  {
+    path: "/connectors",
+    name: "Connectors",
+    component: Connectors,
+    beforeEnter: (to, from, next) => {
+      if (envVariables.isCommunity && envVariables.premiumPaywall) {
+        store.commit("users/setShowPaywall", true);
+      }
+      next();
+    },
+  },
+  {
+    path: "/connectors/:id",
+    name: "ConnectorDetails",
+    component: ConnectorDetails,
+  },
+  {
+    path: "/devices/:id",
+    name: "DeviceDetails",
+    component: DeviceDetails,
   },
   {
     path: "/sessions",
@@ -116,56 +324,59 @@ export const routes: Array<RouteRecordRaw> = [
   },
   {
     path: "/sessions/:id",
-    name: "detailsSession",
-    component: DetailsSessions,
+    name: "SessionDetails",
+    component: SessionDetails,
   },
   {
     path: "/firewall/rules",
-    name: "firewalls",
+    name: "FirewallRules",
     component: FirewallRules,
+    beforeEnter: (to, from, next) => {
+      if (envVariables.isCommunity && envVariables.premiumPaywall) {
+        store.commit("users/setShowPaywall", true);
+      }
+      next();
+    },
   },
   {
     path: "/sshkeys/public-keys",
-    name: "publicKeys",
+    name: "PublicKeys",
     component: PublicKeys,
   },
   {
     path: "/settings",
-    name: "settings",
+    name: "Settings",
     component: Settings,
-    redirect: {
-      name: "profileSettings",
-    },
+    redirect: { name: "SettingProfile" },
     children: [
       {
         path: "profile",
-        name: "profileSettings",
+        name: "SettingProfile",
         component: SettingProfile,
       },
       {
-        path: "namespace-manager",
-        name: "namespaceSettings",
+        path: "namespace",
+        name: "SettingNamespace",
         component: SettingNamespace,
       },
       {
         path: "private-keys",
-        name: "privateKeysSettings",
+        name: "SettingPrivateKeys",
         component: SettingPrivateKeys,
       },
       {
         path: "tags",
-        name: "tagsSettings",
+        name: "SettingTags",
         component: SettingTags,
       },
       {
         path: "billing",
-        name: "billingSettings",
+        name: "SettingBilling",
         beforeEnter: (to, from, next) => {
-          const enabled = envVariables.billingEnable;
-          if (enabled) {
+          if (envVariables.billingEnable) {
             next();
           } else {
-            next("/invalid");
+            next("/404");
           }
         },
         component: SettingBilling,
@@ -173,13 +384,30 @@ export const routes: Array<RouteRecordRaw> = [
     ],
   },
   {
-    path: "/:catchAll(.*)",
-    redirect: { name: "NotFound" },
+    path: "/team",
+    name: "Team",
+    redirect: { name: "ApiKeys" },
+    children: [
+      {
+        path: "api-keys",
+        name: "ApiKeys",
+        component: TeamApiKeys,
+      },
+      {
+        path: "members",
+        name: "Members",
+        component: TeamMembers,
+      },
+    ],
   },
   {
     path: "/404",
     name: "NotFound",
     component: () => import("../views/NotFound.vue"),
+  },
+  {
+    path: "/:catchAll(.*)",
+    redirect: { name: "NotFound" },
   },
 ];
 
@@ -188,18 +416,25 @@ export const router = createRouter({
   routes,
 });
 
-router.beforeEach(async (route) => {
-  const isLoggedIn = store.getters["auth/isLoggedIn"];
-  // defaults to "AppLayout" if route doesn't requires a custom layout
-  const layout = route.meta.layout || "AppLayout";
-  const requiresAuth = route.meta.requiresAuth ?? true;
+router.beforeEach(
+  async (to: RouteLocationNormalized, from: RouteLocationNormalized, next: NavigationGuardNext) => {
+    await store.dispatch("users/fetchSystemInfo");
 
-  await store.dispatch("layout/setLayout", layout);
+    const isLoggedIn: boolean = store.getters["auth/isLoggedIn"];
+    const requiresAuth = to.meta.requiresAuth ?? true;
 
-  // redirect to login page if the user was not logged in and auth is required
-  if (!isLoggedIn && requiresAuth) {
-    return { name: "login" };
-  }
+    const layout = to.meta.layout || "AppLayout";
+    await store.dispatch("layout/setLayout", layout);
 
-  return true;
-});
+    if (!isLoggedIn) {
+      if (requiresAuth) {
+        return next({
+          name: "Login",
+          query: { redirect: to.fullPath },
+        });
+      }
+    }
+
+    return next();
+  },
+);

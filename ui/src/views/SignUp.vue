@@ -1,6 +1,15 @@
 <template>
   <v-container class="pb-0 mb-0">
-    <form @submit.prevent="createAccount">
+    <v-alert
+      v-if="alertVisible"
+      type="warning"
+      variant="tonal"
+      class="mb-4"
+      data-test="user-status-alert"
+    >
+      Please create your account before accepting the namespace invitation.
+    </v-alert>
+    <form @submit.prevent="createAccount" v-if="!showMessage">
       <v-card-title class="text-center">Create Account</v-card-title>
       <v-container>
         <v-text-field
@@ -29,6 +38,7 @@
           color="primary"
           prepend-inner-icon="mdi-email"
           v-model="email"
+          :disabled="isEmailLocked"
           :error-messages="emailError"
           required
           label="Email"
@@ -101,11 +111,11 @@
 
       <v-card-actions class="justify-center">
         <v-btn
-          :disabled="!acceptPrivacyPolicy"
+          :disabled="hasErrors()"
           type="submit"
           data-test="create-account-btn"
           color="primary"
-          :variant="acceptPrivacyPolicy ? 'elevated' : 'tonal'"
+          :variant="!hasErrors() ? 'elevated' : 'tonal'"
           block
         >
           SignUp
@@ -117,10 +127,10 @@
         class="d-flex align-center justify-center pa-4 mx-auto"
         data-test="login-btn"
       >
-        Do you have account ?
+        Do you have an account?
         <router-link
           class="ml-1"
-          :to="{ name: 'login' }"
+          :to="{ name: 'Login' }"
         >
           Login
         </router-link>
@@ -128,15 +138,16 @@
     </form>
     <AccountCreated
       :show="showMessage"
+      :message-kind="messageKind"
       :username="username"
       data-test="accountCreated-component"
     />
   </v-container>
 </template>
 
-<script lang="ts" setup>
-import { ref } from "vue";
-import { useRouter } from "vue-router";
+<script setup lang="ts">
+import { ref, onMounted, Ref, computed } from "vue";
+import { useRouter, useRoute } from "vue-router";
 import { useField } from "vee-validate";
 import * as yup from "yup";
 import axios, { AxiosError } from "axios";
@@ -145,17 +156,30 @@ import AccountCreated from "../components/Account/AccountCreated.vue";
 
 const store = useStore();
 const router = useRouter();
+const route = useRoute();
 const showPassword = ref(false);
 const showConfirmPassword = ref(false);
 const showMessage = ref(false);
 const acceptMarketing = ref(false);
 const acceptPrivacyPolicy = ref(false);
+const isEmailLocked = ref(false);
+const messageKind: Ref<"sig" | "normal"> = ref("normal");
+const token = computed(() => store.getters["users/getSignToken"]);
+const userStatus = computed(() => store.getters["namespaces/getUserStatus"]);
+
+const alertVisible = computed(
+  () => (userStatus.value === "invited" || route.query.redirect?.includes("/accept-invite")) && !showMessage.value,
+);
+
+const sigValue = ref("");
 
 const {
   value: name,
   errorMessage: nameError,
   setErrors: setNameError,
-} = useField<string>("name", yup.string().required(), {
+} = useField<string>("name", yup.string().required()
+  .min(1, "Your name should be 1-64 characters long")
+  .max(64, "Your name should be 1-64 characters long"), {
   initialValue: "",
 });
 
@@ -167,25 +191,10 @@ const {
   "username",
   yup
     .string()
-    .required()
-    .min(3)
-    .max(30)
-    .test(
-      "username-error",
-      "The username only accepts the special characters _, ., - and @.",
-      (value) => {
-        const regex = /^[a-zA-Z0-9_.@-\s]*$/;
-        return regex.test(value || "");
-      },
-    )
-    .test(
-      "white-spaces",
-      "The username cannot contain white spaces.",
-      (value) => {
-        const regex = /\s/;
-        return !regex.test(value || "");
-      },
-    ),
+    .required("Username is required")
+    .min(3, "Username must be at least 3 characters")
+    .max(32, "Username must not exceed 32 characters")
+    .matches(/^[a-z0-9-_.@]+$/, "Username can only contain lowercase letters and numbers"),
   {
     initialValue: "",
   },
@@ -203,35 +212,27 @@ const {
   value: password,
   errorMessage: passwordError,
   setErrors: setPasswordError,
-} = useField<string>(
-  "password",
-  yup
-    .string()
-    .required()
-    .min(5, "Your password should be 5-30 characters long")
-    .max(30, "Your password should be 5-30 characters long"),
-  {
-    initialValue: "",
-  },
-);
+} = useField<string>("password", yup.string().required().min(5).max(32), {
+  initialValue: "",
+});
 
 const {
   value: passwordConfirm,
   errorMessage: passwordConfirmError,
-} = useField<string>(
-  "passwordConfirm",
-  yup
-    .string()
-    .required()
-    .test(
-      "passwords-match",
-      "Passwords do not match",
-      (value) => password.value === value,
-    ),
-  {
-    initialValue: "",
-  },
-);
+} = useField<string>("passwordConfirm", yup.string().required()
+  .test("passwords-match", "Passwords do not match", (value) => password.value === value), {
+  initialValue: "",
+});
+
+onMounted(() => {
+  const emailQuery = route.query.email as string;
+  sigValue.value = route.query.sig as string;
+
+  if (emailQuery && sigValue.value) {
+    email.value = emailQuery;
+    isEmailLocked.value = true;
+  }
+});
 
 const hasErrors = () => !!(
   nameError.value
@@ -239,40 +240,45 @@ const hasErrors = () => !!(
   || emailError.value
   || passwordError.value
   || passwordConfirmError.value
-  || !name.value
-  || !username.value
-  || !email.value
-  || !password.value
-  || !passwordConfirm.value
+  || !acceptPrivacyPolicy.value
 );
+
+const handleAxiosError = (error: AxiosError) => {
+  const responseData = error.response?.data;
+  if (Array.isArray(responseData)) {
+    if (responseData.includes("username")) setUsernameError("This username already exists");
+    if (responseData.includes("name")) setNameError("This name is invalid!");
+    if (responseData.includes("password")) setPasswordError("This password is invalid!");
+    if (responseData.includes("email")) setEmailError("This email is invalid!");
+  }
+};
 
 const createAccount = async () => {
   if (!hasErrors()) {
     try {
-      await store.dispatch("users/signUp", {
+      const signUpData = {
         name: name.value,
         email: email.value,
         username: username.value,
         password: password.value,
         confirmPassword: passwordConfirm.value,
         emailMarketing: acceptMarketing.value,
-      });
+        sig: sigValue.value,
+      };
 
-      showMessage.value = !showMessage.value;
+      await store.dispatch("users/signUp", signUpData);
+      showMessage.value = true;
 
-      await router.push({ name: "ConfirmAccount", query: { username: username.value } });
+      if (!token.value) {
+        await router.push({ name: "ConfirmAccount", query: { username: username.value } });
+      }
+      messageKind.value = "sig";
     } catch (error: unknown) {
       if (axios.isAxiosError(error)) {
-        const axiosError = error as AxiosError;
-        const responseData = axiosError.response?.data;
-        if (Array.isArray(responseData)) {
-          if (responseData.includes("username")) setUsernameError("This username already exists");
-          if (responseData.includes("name")) setNameError("This name is invalid!");
-          if (responseData.includes("password")) setPasswordError("This password is invalid!");
-          if (responseData.includes("email")) setEmailError("This email is invalid!");
-        }
+        handleAxiosError(error);
       }
     }
   }
 };
+
 </script>

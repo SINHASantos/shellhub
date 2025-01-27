@@ -1,8 +1,6 @@
 package models
 
-import (
-	"time"
-)
+import "time"
 
 type Namespace struct {
 	Name         string             `json:"name"  validate:"required,hostname_rfc1123,excludes=.,lowercase"`
@@ -16,6 +14,7 @@ type Namespace struct {
 	DevicesCount int                `json:"devices_count" bson:"devices_count,omitempty"`
 	CreatedAt    time.Time          `json:"created_at" bson:"created_at"`
 	Billing      *Billing           `json:"billing" bson:"billing,omitempty"`
+	Type         Type               `json:"type" bson:"type"`
 }
 
 // HasMaxDevices checks if the namespace has a maximum number of devices.
@@ -28,15 +27,57 @@ func (n *Namespace) HasMaxDevices() bool {
 
 // HasMaxDevicesReached checks if the namespace has reached the maximum number of devices.
 func (n *Namespace) HasMaxDevicesReached() bool {
-	return uint64(n.DevicesCount) >= uint64(n.MaxDevices)
+	return n.DevicesCount >= n.MaxDevices
+}
+
+// HasLimitDevicesReached checks if the namespace limit was reached using the removed devices collection.
+//
+// This method is intended to be run only when the ShellHub instance is Cloud.
+func (n *Namespace) HasLimitDevicesReached(removed int64) bool {
+	return int64(n.DevicesCount)+removed >= int64(n.MaxDevices)
+}
+
+// FindMember checks if a member with the specified ID exists in the namespace.
+func (n *Namespace) FindMember(id string) (*Member, bool) {
+	for _, member := range n.Members {
+		if member.ID == id {
+			return &member, true
+		}
+	}
+
+	return nil, false
 }
 
 type NamespaceSettings struct {
-	SessionRecord bool `json:"session_record" bson:"session_record,omitempty"`
+	SessionRecord          bool   `json:"session_record" bson:"session_record,omitempty"`
+	ConnectionAnnouncement string `json:"connection_announcement" bson:"connection_announcement"`
 }
 
-type Member struct {
-	ID       string `json:"id,omitempty" bson:"id,omitempty"`
-	Username string `json:"username,omitempty" bson:"username,omitempty" validate:"username"`
-	Role     string `json:"role" bson:"role" validate:"required,oneof=administrator operator observer"`
+type NamespaceChanges struct {
+	Name                   string  `bson:"name,omitempty"`
+	SessionRecord          *bool   `bson:"settings.session_record,omitempty"`
+	ConnectionAnnouncement *string `bson:"settings.connection_announcement,omitempty"`
 }
+
+// default Announcement Message for the shellhub namespace
+const DefaultAnnouncementMessage = `
+******************************************************************
+*                                                                *
+*             Welcome to ShellHub Community Edition!             *
+*                                                                *
+* ShellHub is a next-generation SSH server, providing a          *
+* seamless, secure, and user-friendly solution for remote        *
+* access management. With ShellHub, you can manage all your      *
+* devices effortlessly from a single platform, ensuring optimal  *
+* security and productivity.                                     *
+*                                                                *
+* Want to learn more about ShellHub and explore other editions?  *
+* Visit: https://shellhub.io                                     *
+*                                                                *
+* Join our community and contribute to our open-source project:  *
+* https://github.com/shellhub-io/shellhub                        *
+*                                                                *
+* For assistance, please contact the system administrator.       *
+*                                                                *
+******************************************************************
+`

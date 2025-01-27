@@ -4,21 +4,18 @@ import (
 	"context"
 	"testing"
 
-	"github.com/shellhub-io/shellhub/api/pkg/dbtest"
 	"github.com/shellhub-io/shellhub/pkg/models"
-	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	migrate "github.com/xakep666/mongo-migrate"
 )
 
 func TestMigration6(t *testing.T) {
-	logrus.Info("Testing Migration 6 - Test if the status is not unique")
+	t.Cleanup(func() {
+		assert.NoError(t, srv.Reset())
+	})
 
-	db := dbtest.DBServer{}
-	defer db.Stop()
-
-	migrates := migrate.NewMigrate(db.Client().Database("test"), GenerateMigrations()[:5]...)
-	err := migrates.Up(migrate.AllAvailable)
+	migrates := migrate.NewMigrate(c.Database("test"), GenerateMigrations()[:5]...)
+	err := migrates.Up(context.Background(), migrate.AllAvailable)
 	assert.NoError(t, err)
 
 	device1 := models.Device{
@@ -29,13 +26,13 @@ func TestMigration6(t *testing.T) {
 		Status: "accepted",
 	}
 
-	_, err = db.Client().Database("test").Collection("devices").InsertOne(context.TODO(), device1)
+	_, err = c.Database("test").Collection("devices").InsertOne(context.TODO(), device1)
 	assert.NoError(t, err)
 
-	_, err = db.Client().Database("test").Collection("devices").InsertOne(context.TODO(), device2)
+	_, err = c.Database("test").Collection("devices").InsertOne(context.TODO(), device2)
 	assert.NoError(t, err)
 
-	migrates = migrate.NewMigrate(db.Client().Database("test"), GenerateMigrations()[:6]...)
-	err = migrates.Up(migrate.AllAvailable)
+	migrates = migrate.NewMigrate(c.Database("test"), GenerateMigrations()[:6]...)
+	err = migrates.Up(context.Background(), migrate.AllAvailable)
 	assert.NoError(t, err)
 }

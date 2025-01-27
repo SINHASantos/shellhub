@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shellhub-io/shellhub/api/pkg/guard"
 	svc "github.com/shellhub-io/shellhub/api/services"
 	"github.com/shellhub-io/shellhub/api/services/mocks"
-	"github.com/shellhub-io/shellhub/pkg/api/paginator"
+	"github.com/shellhub-io/shellhub/pkg/api/authorizer"
+	"github.com/shellhub-io/shellhub/pkg/api/query"
 	"github.com/shellhub-io/shellhub/pkg/api/requests"
 	"github.com/shellhub-io/shellhub/pkg/models"
 	"github.com/stretchr/testify/assert"
@@ -27,18 +27,18 @@ func TestGetPublicKeys(t *testing.T) {
 		expectedStatus  int
 	}
 	cases := []struct {
-		title         string
-		query         paginator.Query
-		requiredMocks func(query paginator.Query)
+		description   string
+		paginator     query.Paginator
+		requiredMocks func(query query.Paginator)
 		expected      Expected
 	}{
 		{
-			title: "success when try to list a publics keys exists",
-			query: paginator.Query{
+			description: "success when try to list a publics keys exists",
+			paginator: query.Paginator{
 				Page:    1,
 				PerPage: 10,
 			},
-			requiredMocks: func(query paginator.Query) {
+			requiredMocks: func(query query.Paginator) {
 				mock.On("ListPublicKeys", gomock.Anything, query).Return([]models.PublicKey{}, 1, nil)
 			},
 			expected: Expected{
@@ -49,17 +49,17 @@ func TestGetPublicKeys(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		t.Run(tc.title, func(t *testing.T) {
-			tc.requiredMocks(tc.query)
+		t.Run(tc.description, func(t *testing.T) {
+			tc.requiredMocks(tc.paginator)
 
-			jsonData, err := json.Marshal(tc.query)
+			jsonData, err := json.Marshal(tc.paginator)
 			if err != nil {
 				assert.NoError(t, err)
 			}
 
 			req := httptest.NewRequest(http.MethodGet, "/api/sshkeys/public-keys", strings.NewReader(string(jsonData)))
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Role", guard.RoleOwner)
+			req.Header.Set("X-Role", authorizer.RoleOwner.String())
 			rec := httptest.NewRecorder()
 
 			e := NewRouter(mock)
@@ -92,10 +92,10 @@ func TestGetPublicKey(t *testing.T) {
 		{
 			title: "fails when validate because the tag does not have a min of 3 characters",
 			query: requests.PublicKeyGet{
-				TenantParam: requests.TenantParam{Tenant: "tg"},
+				TenantParam: requests.TenantParam{Tenant: "00000000-0000-4000-0000-000000000000"},
 			},
 			expected:      Expected{expectedStatus: http.StatusBadRequest},
-			requiredMocks: func(req requests.PublicKeyGet) {},
+			requiredMocks: func(_ requests.PublicKeyGet) {},
 		},
 		{
 			title: "fails when validate because the tag does not have a max of 255 characters",
@@ -103,7 +103,7 @@ func TestGetPublicKey(t *testing.T) {
 				TenantParam: requests.TenantParam{Tenant: "BCD3821E12F7A6D89295D86E277F2C365D7A4C3FCCD75D8A2F46C0A556A8EBAAF0845C85D50241FC2F9806D8668FF75D262FDA0A055784AD36D8CA7D2BB600C9BCD3821E12F7A6D89295D86E277F2C365D7A4C3FCCD75D8A2F46C0A556A8EBAAF0845C85D50241FC2F9806D8668FF75D262FDA0A055784AD36D8CA7D2BB600C9"},
 			},
 			expected:      Expected{expectedStatus: http.StatusBadRequest},
-			requiredMocks: func(req requests.PublicKeyGet) {},
+			requiredMocks: func(_ requests.PublicKeyGet) {},
 		},
 		{
 			title: "fails when validate because have a '/' with in your characters",
@@ -111,7 +111,7 @@ func TestGetPublicKey(t *testing.T) {
 				TenantParam: requests.TenantParam{Tenant: "test/"},
 			},
 			expected:      Expected{expectedStatus: http.StatusBadRequest},
-			requiredMocks: func(req requests.PublicKeyGet) {},
+			requiredMocks: func(_ requests.PublicKeyGet) {},
 		},
 		{
 			title: "fails when validate because have a '&' with in your characters",
@@ -119,7 +119,7 @@ func TestGetPublicKey(t *testing.T) {
 				TenantParam: requests.TenantParam{Tenant: "test&"},
 			},
 			expected:      Expected{expectedStatus: http.StatusBadRequest},
-			requiredMocks: func(req requests.PublicKeyGet) {},
+			requiredMocks: func(_ requests.PublicKeyGet) {},
 		},
 		{
 			title: "fails when validate because have a '@' with in your characters",
@@ -127,13 +127,13 @@ func TestGetPublicKey(t *testing.T) {
 				TenantParam: requests.TenantParam{Tenant: "test@"},
 			},
 			expected:      Expected{expectedStatus: http.StatusBadRequest},
-			requiredMocks: func(req requests.PublicKeyGet) {},
+			requiredMocks: func(_ requests.PublicKeyGet) {},
 		},
 		{
 			title: "success when try to get a public key exists",
 			query: requests.PublicKeyGet{
-				FingerprintParam: requests.FingerprintParam{Fingerprint: "figertest"},
-				TenantParam:      requests.TenantParam{Tenant: "tenant"},
+				FingerprintParam: requests.FingerprintParam{Fingerprint: "fingerprint"},
+				TenantParam:      requests.TenantParam{Tenant: "00000000-0000-4000-0000-000000000000"},
 			},
 			requiredMocks: func(query requests.PublicKeyGet) {
 				mock.On("GetPublicKey", gomock.Anything, query.Fingerprint, query.Tenant).Return(&models.PublicKey{}, nil)
@@ -156,7 +156,7 @@ func TestGetPublicKey(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/internal/sshkeys/public-keys/%s/%s", tc.query.Fingerprint, tc.query.Tenant), strings.NewReader(string(jsonData)))
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Role", guard.RoleOwner)
+			req.Header.Set("X-Role", authorizer.RoleOwner.String())
 			rec := httptest.NewRecorder()
 
 			e := NewRouter(mock)
@@ -174,232 +174,423 @@ func TestGetPublicKey(t *testing.T) {
 }
 
 func TestDeletePublicKey(t *testing.T) {
-	mock := new(mocks.Service)
+	type Expected struct {
+		status int
+	}
+
+	svcMock := new(mocks.Service)
 
 	cases := []struct {
-		title          string
-		query          requests.PublicKeyDelete
-		requiredMocks  func(query requests.PublicKeyDelete)
-		expectedStatus int
+		description   string
+		fingerprint   string
+		headers       map[string]string
+		requiredMocks func()
+		expected      Expected
 	}{
 		{
-			title: "fails when bind fails to validate uid",
-			query: requests.PublicKeyDelete{
-				FingerprintParam: requests.FingerprintParam{Fingerprint: ""},
+			description: "fails when role is observer",
+			fingerprint: "8e:b3:e2:ce:3c:6c:27:ff:51:c9:5d:77:af:92:2f:d8",
+			headers: map[string]string{
+				"Content-Type": "application/json",
+				"X-Tenant-ID":  "00000000-0000-4000-0000-000000000000",
+				"X-Role":       "observer",
+				"X-ID":         "000000000000000000000000",
 			},
-			requiredMocks:  func(query requests.PublicKeyDelete) {},
-			expectedStatus: http.StatusNotFound,
+			requiredMocks: func() {
+			},
+			expected: Expected{status: http.StatusForbidden},
 		},
 		{
-			title: "fails when try to deleting an existing public key",
-			query: requests.PublicKeyDelete{
-				FingerprintParam: requests.FingerprintParam{Fingerprint: "figertest"},
+			description: "fails when role is operator",
+			fingerprint: "8e:b3:e2:ce:3c:6c:27:ff:51:c9:5d:77:af:92:2f:d8",
+			headers: map[string]string{
+				"Content-Type": "application/json",
+				"X-Tenant-ID":  "00000000-0000-4000-0000-000000000000",
+				"X-Role":       "operator",
+				"X-ID":         "000000000000000000000000",
 			},
-			requiredMocks: func(query requests.PublicKeyDelete) {
-				mock.On("DeletePublicKey", gomock.Anything, query.Fingerprint, "tenant").Return(svc.ErrNotFound).Once()
+			requiredMocks: func() {
 			},
-			expectedStatus: http.StatusNotFound,
+			expected: Expected{status: http.StatusForbidden},
 		},
 		{
-			title: "success when try to deleting an existing public key",
-			query: requests.PublicKeyDelete{
-				FingerprintParam: requests.FingerprintParam{Fingerprint: "figertest"},
+			description: "fails when try to deleting a non existent public key",
+			fingerprint: "8e:b3:e2:ce:3c:6c:27:ff:51:c9:5d:77:af:92:2f:d8",
+			headers: map[string]string{
+				"Content-Type": "application/json",
+				"X-Tenant-ID":  "00000000-0000-4000-0000-000000000000",
+				"X-Role":       "owner",
+				"X-ID":         "000000000000000000000000",
 			},
-			requiredMocks: func(query requests.PublicKeyDelete) {
-				mock.On("DeletePublicKey", gomock.Anything, query.Fingerprint, "tenant").Return(nil).Once()
+			requiredMocks: func() {
+				svcMock.
+					On("DeletePublicKey", gomock.Anything, "8e:b3:e2:ce:3c:6c:27:ff:51:c9:5d:77:af:92:2f:d8", "00000000-0000-4000-0000-000000000000").
+					Return(svc.ErrNotFound).
+					Once()
 			},
-			expectedStatus: http.StatusOK,
+			expected: Expected{status: http.StatusNotFound},
+		},
+		{
+			description: "success when fingerprint is encoded",
+			fingerprint: "8e%3Ab3%3Ae2%3Ace%3A3c%3A6c%3A27%3Aff%3A51%3Ac9%3A5d%3A77%3Aaf%3A92%3A2f%3Ad8",
+			headers: map[string]string{
+				"Content-Type": "application/json",
+				"X-Tenant-ID":  "00000000-0000-4000-0000-000000000000",
+				"X-Role":       "owner",
+				"X-ID":         "000000000000000000000000",
+			},
+			requiredMocks: func() {
+				svcMock.
+					On("DeletePublicKey", gomock.Anything, "8e:b3:e2:ce:3c:6c:27:ff:51:c9:5d:77:af:92:2f:d8", "00000000-0000-4000-0000-000000000000").
+					Return(nil).
+					Once()
+			},
+			expected: Expected{status: http.StatusOK},
+		},
+		{
+			description: "success when try to deleting an existing public key",
+			fingerprint: "8e:b3:e2:ce:3c:6c:27:ff:51:c9:5d:77:af:92:2f:d8",
+			headers: map[string]string{
+				"Content-Type": "application/json",
+				"X-Tenant-ID":  "00000000-0000-4000-0000-000000000000",
+				"X-Role":       "owner",
+				"X-ID":         "000000000000000000000000",
+			},
+			requiredMocks: func() {
+				svcMock.
+					On("DeletePublicKey", gomock.Anything, "8e:b3:e2:ce:3c:6c:27:ff:51:c9:5d:77:af:92:2f:d8", "00000000-0000-4000-0000-000000000000").
+					Return(nil).
+					Once()
+			},
+			expected: Expected{status: http.StatusOK},
 		},
 	}
 
 	for _, tc := range cases {
-		t.Run(tc.title, func(t *testing.T) {
-			tc.requiredMocks(tc.query)
+		t.Run(tc.description, func(t *testing.T) {
+			tc.requiredMocks()
 
-			req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/sshkeys/public-keys/%s", tc.query.Fingerprint), nil)
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Role", guard.RoleOwner)
-			req.Header.Set("X-Tenant-ID", "tenant")
+			req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/sshkeys/public-keys/%s", tc.fingerprint), nil)
+			for k, v := range tc.headers {
+				req.Header.Set(k, v)
+			}
+
 			rec := httptest.NewRecorder()
 
-			e := NewRouter(mock)
+			e := NewRouter(svcMock)
 			e.ServeHTTP(rec, req)
 
-			assert.Equal(t, tc.expectedStatus, rec.Result().StatusCode)
+			assert.Equal(t, tc.expected.status, rec.Result().StatusCode)
 		})
 	}
 }
 
 func TestRemovePublicKeyTag(t *testing.T) {
-	mock := new(mocks.Service)
+	type Expected struct {
+		status int
+	}
+
+	svcMock := new(mocks.Service)
 
 	cases := []struct {
-		title          string
-		query          requests.PublicKeyTagRemove
-		tenant         string
-		requiredMocks  func(query requests.PublicKeyTagRemove)
-		expectedStatus int
+		description   string
+		tag           string
+		fingerprint   string
+		headers       map[string]string
+		requiredMocks func()
+		expected      Expected
 	}{
 		{
-			title: "fails when validate because the tag does not have a min of 3 characters",
-			query: requests.PublicKeyTagRemove{
-				TagParam: requests.TagParam{Tag: "tg"},
+			description: "fails when role is observer",
+			tag:         "tag",
+			fingerprint: "fingerprint",
+			headers: map[string]string{
+				"Content-Type": "application/json",
+				"X-Tenant-ID":  "00000000-0000-4000-0000-000000000000",
+				"X-Role":       "observer",
+				"X-ID":         "000000000000000000000000",
 			},
-			expectedStatus: http.StatusBadRequest,
-			requiredMocks:  func(req requests.PublicKeyTagRemove) {},
+			requiredMocks: func() {
+			},
+			expected: Expected{
+				status: http.StatusForbidden,
+			},
 		},
 		{
-			title: "fails when validate because the tag does not have a max of 255 characters",
-			query: requests.PublicKeyTagRemove{
-				TagParam: requests.TagParam{Tag: "BCD3821E12F7A6D89295D86E277F2C365D7A4C3FCCD75D8A2F46C0A556A8EBAAF0845C85D50241FC2F9806D8668FF75D262FDA0A055784AD36D8CA7D2BB600C9BCD3821E12F7A6D89295D86E277F2C365D7A4C3FCCD75D8A2F46C0A556A8EBAAF0845C85D50241FC2F9806D8668FF75D262FDA0A055784AD36D8CA7D2BB600C9"},
+			description: "fails when validate because the tag does not have a min of 3 characters",
+			tag:         "ta",
+			fingerprint: "fingerprint",
+			headers: map[string]string{
+				"Content-Type": "application/json",
+				"X-Tenant-ID":  "00000000-0000-4000-0000-000000000000",
+				"X-Role":       "owner",
+				"X-ID":         "000000000000000000000000",
 			},
-			expectedStatus: http.StatusBadRequest,
-			requiredMocks:  func(req requests.PublicKeyTagRemove) {},
+			requiredMocks: func() {},
+			expected: Expected{
+				status: http.StatusBadRequest,
+			},
 		},
 		{
-			title: "fails when validate because have a '/' with in your characters",
-			query: requests.PublicKeyTagRemove{
-				TagParam: requests.TagParam{Tag: "test/"},
+			description: "fails when validate because the tag does not have a max of 255 characters",
+			tag:         "BCD3821E12F7A6D89295D86E277F2C365D7A4C3FCCD75D8A2F46C0A556A8EBAAF0845C85D50241FC2F9806D8668FF75D262FDA0A055784AD36D8CA7D2BB600C9BCD3821E12F7A6D89295D86E277F2C365D7A4C3FCCD75D8A2F46C0A556A8EBAAF0845C85D50241FC2F9806D8668FF75D262FDA0A055784AD36D8CA7D2BB600C9",
+			fingerprint: "fingerprint",
+			headers: map[string]string{
+				"Content-Type": "application/json",
+				"X-Tenant-ID":  "00000000-0000-4000-0000-000000000000",
+				"X-Role":       "owner",
+				"X-ID":         "000000000000000000000000",
 			},
-			expectedStatus: http.StatusBadRequest,
-			requiredMocks:  func(req requests.PublicKeyTagRemove) {},
+			requiredMocks: func() {},
+			expected: Expected{
+				status: http.StatusBadRequest,
+			},
 		},
 		{
-			title: "fails when validate because have a '&' with in your characters",
-			query: requests.PublicKeyTagRemove{
-				TagParam: requests.TagParam{Tag: "test&"},
+			description: "fails when validate because have a '/' with in your characters",
+			tag:         "tag/",
+			fingerprint: "fingerprint",
+			headers: map[string]string{
+				"Content-Type": "application/json",
+				"X-Tenant-ID":  "00000000-0000-4000-0000-000000000000",
+				"X-Role":       "owner",
+				"X-ID":         "000000000000000000000000",
 			},
-			expectedStatus: http.StatusBadRequest,
-			requiredMocks:  func(req requests.PublicKeyTagRemove) {},
+			requiredMocks: func() {},
+			expected: Expected{
+				status: http.StatusBadRequest,
+			},
 		},
 		{
-			title: "fails when validate because have a '@' with in your characters",
-			query: requests.PublicKeyTagRemove{
-				TagParam: requests.TagParam{Tag: "test@"},
+			description: "fails when validate because have a '&' with in your characters",
+			tag:         "tag&",
+			fingerprint: "fingerprint",
+			headers: map[string]string{
+				"Content-Type": "application/json",
+				"X-Tenant-ID":  "00000000-0000-4000-0000-000000000000",
+				"X-Role":       "owner",
+				"X-ID":         "000000000000000000000000",
 			},
-			expectedStatus: http.StatusBadRequest,
-			requiredMocks:  func(req requests.PublicKeyTagRemove) {},
+			requiredMocks: func() {},
+			expected: Expected{
+				status: http.StatusBadRequest,
+			},
 		},
 		{
-			title: "success when try to removing an existing public key",
-			query: requests.PublicKeyTagRemove{
-				FingerprintParam: requests.FingerprintParam{Fingerprint: "figertest"},
-				TagParam:         requests.TagParam{Tag: "tag"},
+			description: "fails when validate because have a '@' with in your characters",
+			tag:         "tag@",
+			fingerprint: "fingerprint",
+			headers: map[string]string{
+				"Content-Type": "application/json",
+				"X-Tenant-ID":  "00000000-0000-4000-0000-000000000000",
+				"X-Role":       "owner",
+				"X-ID":         "000000000000000000000000",
 			},
-			tenant: "tenant-id",
-			requiredMocks: func(query requests.PublicKeyTagRemove) {
-				mock.On("RemovePublicKeyTag", gomock.Anything, "tenant-id", query.Fingerprint, query.Tag).Return(nil)
+			requiredMocks: func() {},
+			expected: Expected{
+				status: http.StatusBadRequest,
 			},
-			expectedStatus: http.StatusOK,
+		},
+		{
+			description: "success when try to removing an existing public key",
+			tag:         "tag",
+			fingerprint: "fingerprint",
+			headers: map[string]string{
+				"Content-Type": "application/json",
+				"X-Tenant-ID":  "00000000-0000-4000-0000-000000000000",
+				"X-Role":       "owner",
+				"X-ID":         "000000000000000000000000",
+			},
+			requiredMocks: func() {
+				svcMock.On("RemovePublicKeyTag", gomock.Anything, "00000000-0000-4000-0000-000000000000", "fingerprint", "tag").Return(nil)
+			},
+			expected: Expected{
+				status: http.StatusOK,
+			},
 		},
 	}
 
 	for _, tc := range cases {
-		t.Run(tc.title, func(t *testing.T) {
-			tc.requiredMocks(tc.query)
+		t.Run(tc.description, func(t *testing.T) {
+			tc.requiredMocks()
 
-			jsonData, err := json.Marshal(tc.query)
-			if err != nil {
-				assert.NoError(t, err)
+			req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/sshkeys/public-keys/%s/tags/%s", tc.fingerprint, tc.tag), nil)
+			for k, v := range tc.headers {
+				req.Header.Set(k, v)
 			}
 
-			req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/sshkeys/public-keys/%s/tags/%s", tc.query.Fingerprint, tc.query.Tag), strings.NewReader(string(jsonData)))
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Role", guard.RoleOwner)
-			req.Header.Set("X-Tenant-ID", tc.tenant)
 			rec := httptest.NewRecorder()
 
-			e := NewRouter(mock)
+			e := NewRouter(svcMock)
 			e.ServeHTTP(rec, req)
 
-			assert.Equal(t, tc.expectedStatus, rec.Result().StatusCode)
+			assert.Equal(t, tc.expected.status, rec.Result().StatusCode)
 		})
 	}
 }
 
-func TestAddPublicKeyTagURL(t *testing.T) {
-	mock := new(mocks.Service)
+func TestAddPublicKeyTag(t *testing.T) {
+	type Expected struct {
+		status int
+	}
+
+	svcMock := new(mocks.Service)
 
 	cases := []struct {
-		title          string
-		query          requests.PublicKeyTagAdd
-		tenant         string
-		requiredMocks  func(query requests.PublicKeyTagAdd)
-		expectedStatus int
+		description   string
+		fingerprint   string
+		headers       map[string]string
+		body          map[string]interface{}
+		requiredMocks func()
+		expected      Expected
 	}{
 		{
-			title: "fails when validate because the tag does not have a min of 3 characters",
-			query: requests.PublicKeyTagAdd{
-				TagParam: requests.TagParam{Tag: "tg"},
+			description: "fails when role is observer",
+			fingerprint: "fingerprint",
+			headers: map[string]string{
+				"Content-Type": "application/json",
+				"X-Tenant-ID":  "00000000-0000-4000-0000-000000000000",
+				"X-Role":       "observer",
+				"X-ID":         "000000000000000000000000",
 			},
-			expectedStatus: http.StatusBadRequest,
-			requiredMocks:  func(req requests.PublicKeyTagAdd) {},
+			body: map[string]interface{}{
+				"tag": "tag",
+			},
+			requiredMocks: func() {
+			},
+			expected: Expected{
+				status: http.StatusForbidden,
+			},
 		},
 		{
-			title: "fails when validate because the tag does not have a max of 255 characters",
-			query: requests.PublicKeyTagAdd{
-				TagParam: requests.TagParam{Tag: "BCD3821E12F7A6D89295D86E277F2C365D7A4C3FCCD75D8A2F46C0A556A8EBAAF0845C85D50241FC2F9806D8668FF75D262FDA0A055784AD36D8CA7D2BB600C9BCD3821E12F7A6D89295D86E277F2C365D7A4C3FCCD75D8A2F46C0A556A8EBAAF0845C85D50241FC2F9806D8668FF75D262FDA0A055784AD36D8CA7D2BB600C9"},
+			description: "fails when validate because the tag does not have a min of 3 characters",
+			fingerprint: "fingerprint",
+			headers: map[string]string{
+				"Content-Type": "application/json",
+				"X-Tenant-ID":  "00000000-0000-4000-0000-000000000000",
+				"X-Role":       "owner",
+				"X-ID":         "000000000000000000000000",
 			},
-			expectedStatus: http.StatusBadRequest,
-			requiredMocks:  func(req requests.PublicKeyTagAdd) {},
+			body: map[string]interface{}{
+				"tag": "ta",
+			},
+			requiredMocks: func() {},
+			expected: Expected{
+				status: http.StatusBadRequest,
+			},
 		},
 		{
-			title: "fails when validate because have a '/' with in your characters",
-			query: requests.PublicKeyTagAdd{
-				TagParam: requests.TagParam{Tag: "test/"},
+			description: "fails when validate because the tag does not have a max of 255 characters",
+			fingerprint: "fingerprint",
+			headers: map[string]string{
+				"Content-Type": "application/json",
+				"X-Tenant-ID":  "00000000-0000-4000-0000-000000000000",
+				"X-Role":       "owner",
+				"X-ID":         "000000000000000000000000",
 			},
-			expectedStatus: http.StatusBadRequest,
-			requiredMocks:  func(req requests.PublicKeyTagAdd) {},
+			body: map[string]interface{}{
+				"tag": "BCD3821E12F7A6D89295D86E277F2C365D7A4C3FCCD75D8A2F46C0A556A8EBAAF0845C85D50241FC2F9806D8668FF75D262FDA0A055784AD36D8CA7D2BB600C9BCD3821E12F7A6D89295D86E277F2C365D7A4C3FCCD75D8A2F46C0A556A8EBAAF0845C85D50241FC2F9806D8668FF75D262FDA0A055784AD36D8CA7D2BB600C9",
+			},
+			requiredMocks: func() {},
+			expected: Expected{
+				status: http.StatusBadRequest,
+			},
 		},
 		{
-			title: "fails when validate because have a '&' with in your characters",
-			query: requests.PublicKeyTagAdd{
-				TagParam: requests.TagParam{Tag: "test&"},
+			description: "fails when validate because have a '/' with in your characters",
+			fingerprint: "fingerprint",
+			headers: map[string]string{
+				"Content-Type": "application/json",
+				"X-Tenant-ID":  "00000000-0000-4000-0000-000000000000",
+				"X-Role":       "owner",
+				"X-ID":         "000000000000000000000000",
 			},
-			expectedStatus: http.StatusBadRequest,
-			requiredMocks:  func(req requests.PublicKeyTagAdd) {},
+			body: map[string]interface{}{
+				"tag": "tag/",
+			},
+			requiredMocks: func() {},
+			expected: Expected{
+				status: http.StatusBadRequest,
+			},
 		},
 		{
-			title: "fails when validate because have a '@' with in your characters",
-			query: requests.PublicKeyTagAdd{
-				TagParam: requests.TagParam{Tag: "test@"},
+			description: "fails when validate because have a '&' with in your characters",
+			fingerprint: "fingerprint",
+			headers: map[string]string{
+				"Content-Type": "application/json",
+				"X-Tenant-ID":  "00000000-0000-4000-0000-000000000000",
+				"X-Role":       "owner",
+				"X-ID":         "000000000000000000000000",
 			},
-			expectedStatus: http.StatusBadRequest,
-			requiredMocks:  func(req requests.PublicKeyTagAdd) {},
+			body: map[string]interface{}{
+				"tag": "tag&",
+			},
+			requiredMocks: func() {},
+			expected: Expected{
+				status: http.StatusBadRequest,
+			},
 		},
 		{
-			title: "success when try to add an existing public tag key",
-			query: requests.PublicKeyTagAdd{
-				FingerprintParam: requests.FingerprintParam{Fingerprint: "figertest"},
-				TagParam:         requests.TagParam{Tag: "tag"},
+			description: "fails when validate because have a '@' with in your characters",
+			fingerprint: "fingerprint",
+			headers: map[string]string{
+				"Content-Type": "application/json",
+				"X-Tenant-ID":  "00000000-0000-4000-0000-000000000000",
+				"X-Role":       "owner",
+				"X-ID":         "000000000000000000000000",
 			},
-			tenant: "tenant-id",
-			requiredMocks: func(query requests.PublicKeyTagAdd) {
-				mock.On("AddPublicKeyTag", gomock.Anything, "tenant-id", query.Fingerprint, query.Tag).Return(nil).Once()
+			body: map[string]interface{}{
+				"tag": "tag@",
 			},
-			expectedStatus: http.StatusOK,
+			requiredMocks: func() {},
+			expected: Expected{
+				status: http.StatusBadRequest,
+			},
+		},
+		{
+			description: "success when try to add an existing public tag key",
+			fingerprint: "fingerprint",
+			headers: map[string]string{
+				"Content-Type": "application/json",
+				"X-Tenant-ID":  "00000000-0000-4000-0000-000000000000",
+				"X-Role":       "owner",
+				"X-ID":         "000000000000000000000000",
+			},
+			body: map[string]interface{}{
+				"tag": "tag",
+			},
+			requiredMocks: func() {
+				svcMock.
+					On("AddPublicKeyTag", gomock.Anything, "00000000-0000-4000-0000-000000000000", "fingerprint", "tag").
+					Return(nil).
+					Once()
+			},
+			expected: Expected{
+				status: http.StatusOK,
+			},
 		},
 	}
 
 	for _, tc := range cases {
-		t.Run(tc.title, func(t *testing.T) {
-			tc.requiredMocks(tc.query)
+		t.Run(tc.description, func(t *testing.T) {
+			tc.requiredMocks()
 
-			jsonData, err := json.Marshal(tc.query)
+			jsonData, err := json.Marshal(tc.body)
 			if err != nil {
 				assert.NoError(t, err)
 			}
 
-			req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/sshkeys/public-keys/%s/tags", tc.query.Fingerprint), strings.NewReader(string(jsonData)))
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Role", guard.RoleOwner)
-			req.Header.Set("X-Tenant-ID", tc.tenant)
+			req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/sshkeys/public-keys/%s/tags", tc.fingerprint), strings.NewReader(string(jsonData)))
+			for k, v := range tc.headers {
+				req.Header.Set(k, v)
+			}
+
 			rec := httptest.NewRecorder()
 
-			e := NewRouter(mock)
+			e := NewRouter(svcMock)
 			e.ServeHTTP(rec, req)
 
-			assert.Equal(t, tc.expectedStatus, rec.Result().StatusCode)
+			assert.Equal(t, tc.expected.status, rec.Result().StatusCode)
 		})
 	}
 }
@@ -434,7 +625,7 @@ func TestCreatePrivateKey(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodPost, "/internal/sshkeys/private-keys", nil)
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Role", guard.RoleOwner)
+			req.Header.Set("X-Role", authorizer.RoleOwner.String())
 			rec := httptest.NewRecorder()
 
 			e := NewRouter(mock)

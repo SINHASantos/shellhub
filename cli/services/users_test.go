@@ -5,11 +5,14 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/shellhub-io/shellhub/api/pkg/guard"
 	"github.com/shellhub-io/shellhub/api/store"
 	"github.com/shellhub-io/shellhub/api/store/mocks"
+	"github.com/shellhub-io/shellhub/cli/pkg/inputs"
+	"github.com/shellhub-io/shellhub/pkg/api/authorizer"
 	"github.com/shellhub-io/shellhub/pkg/clock"
 	clockmock "github.com/shellhub-io/shellhub/pkg/clock/mocks"
+	"github.com/shellhub-io/shellhub/pkg/hash"
+	hashmock "github.com/shellhub-io/shellhub/pkg/hash/mocks"
 	"github.com/shellhub-io/shellhub/pkg/models"
 	"github.com/stretchr/testify/assert"
 )
@@ -21,6 +24,8 @@ func TestUserCreate(t *testing.T) {
 	}
 
 	mock := new(mocks.Store)
+	hashMock := &hashmock.Hasher{}
+	hash.Backend = hashMock
 	ctx := context.TODO()
 	now := clock.Now()
 
@@ -40,7 +45,7 @@ func TestUserCreate(t *testing.T) {
 			description: "fails when email is invalid",
 			username:    "john_doe",
 			email:       "invalidmail.com",
-			password:    "password",
+			password:    "secret",
 			requiredMocks: func() {
 			},
 			expected: Expected{nil, ErrUserDataInvalid},
@@ -49,55 +54,21 @@ func TestUserCreate(t *testing.T) {
 			description: "fails when username is invalid",
 			username:    "",
 			email:       "john.doe@test.com",
-			password:    "password",
+			password:    "secret",
 			requiredMocks: func() {
 			},
 			expected: Expected{nil, ErrUserDataInvalid},
 		},
 		{
-			description: "fails when the password is invalid",
-			username:    "john_doe",
-			email:       "john.doe@test.com",
-			password:    "ab",
-			requiredMocks: func() {
-			},
-			expected: Expected{nil, ErrUserPasswordInvalid},
-		},
-		{
 			description: "fails when email is duplicated",
 			username:    "john_doe",
 			email:       "john.doe@test.com",
-			password:    "password",
+			password:    "secret",
 			requiredMocks: func() {
-				user := &models.User{
-					UserData: models.UserData{
-						Name:     "john_doe",
-						Email:    "john.doe@test.com",
-						Username: "john_doe",
-					},
-					UserPassword: models.UserPassword{
-						Password: hashPassword("password"),
-					},
-					Confirmed:     true,
-					CreatedAt:     clock.Now(),
-					MaxNamespaces: MaxNumberNamespacesCommunity,
-				}
-				mock.On("UserCreate", ctx, user).Return(store.ErrDuplicate).Once()
-				currentUser := &models.User{
-					UserData: models.UserData{
-						Name:     "jane_doe",
-						Email:    "john.doe@test.com",
-						Username: "jane_doe",
-					},
-					UserPassword: models.UserPassword{
-						Password: hashPassword("password"),
-					},
-					Confirmed:     true,
-					CreatedAt:     clock.Now(),
-					MaxNamespaces: MaxNumberNamespacesCommunity,
-				}
-				mock.On("UserGetByUsername", ctx, "john_doe").Return(nil, errors.New("error")).Once()
-				mock.On("UserGetByEmail", ctx, "john.doe@test.com").Return(currentUser, nil).Once()
+				mock.
+					On("UserConflicts", ctx, &models.UserConflicts{Username: "john_doe", Email: "john.doe@test.com"}).
+					Return([]string{"email"}, true, nil).
+					Once()
 			},
 			expected: Expected{nil, ErrUserEmailExists},
 		},
@@ -105,37 +76,12 @@ func TestUserCreate(t *testing.T) {
 			description: "fails when username is duplicated",
 			username:    "john_doe",
 			email:       "john.doe@test.com",
-			password:    "password",
+			password:    "secret",
 			requiredMocks: func() {
-				user := &models.User{
-					UserData: models.UserData{
-						Name:     "john_doe",
-						Email:    "john.doe@test.com",
-						Username: "john_doe",
-					},
-					UserPassword: models.UserPassword{
-						Password: hashPassword("password"),
-					},
-					Confirmed:     true,
-					CreatedAt:     clock.Now(),
-					MaxNamespaces: MaxNumberNamespacesCommunity,
-				}
-				mock.On("UserCreate", ctx, user).Return(store.ErrDuplicate).Once()
-				currentUser := &models.User{
-					UserData: models.UserData{
-						Name:     "john_doe",
-						Email:    "jane.doe@test.com",
-						Username: "john_doe",
-					},
-					UserPassword: models.UserPassword{
-						Password: hashPassword("password"),
-					},
-					Confirmed:     true,
-					CreatedAt:     clock.Now(),
-					MaxNamespaces: MaxNumberNamespacesCommunity,
-				}
-				mock.On("UserGetByUsername", ctx, "john_doe").Return(currentUser, nil).Once()
-				mock.On("UserGetByEmail", ctx, "john.doe@test.com").Return(nil, errors.New("error")).Once()
+				mock.
+					On("UserConflicts", ctx, &models.UserConflicts{Username: "john_doe", Email: "john.doe@test.com"}).
+					Return([]string{"username"}, true, nil).
+					Once()
 			},
 			expected: Expected{nil, ErrUserNameExists},
 		},
@@ -143,85 +89,66 @@ func TestUserCreate(t *testing.T) {
 			description: "fails when email and username is duplicated",
 			username:    "john_doe",
 			email:       "john.doe@test.com",
-			password:    "password",
+			password:    "secret",
 			requiredMocks: func() {
-				user := &models.User{
-					UserData: models.UserData{
-						Name:     "john_doe",
-						Email:    "john.doe@test.com",
-						Username: "john_doe",
-					},
-					UserPassword: models.UserPassword{
-						Password: hashPassword("password"),
-					},
-					Confirmed:     true,
-					CreatedAt:     clock.Now(),
-					MaxNamespaces: MaxNumberNamespacesCommunity,
-				}
-				mock.On("UserCreate", ctx, user).Return(store.ErrDuplicate).Once()
-				currentUser := &models.User{
-					UserData: models.UserData{
-						Name:     "john_doe",
-						Email:    "john.doe@test.com",
-						Username: "john_doe",
-					},
-					UserPassword: models.UserPassword{
-						Password: hashPassword("password"),
-					},
-					Confirmed:     true,
-					CreatedAt:     clock.Now(),
-					MaxNamespaces: MaxNumberNamespacesCommunity,
-				}
-				mock.On("UserGetByUsername", ctx, "john_doe").Return(currentUser, nil).Once()
-				mock.On("UserGetByEmail", ctx, "john.doe@test.com").Return(currentUser, nil).Once()
+				mock.
+					On("UserConflicts", ctx, &models.UserConflicts{Username: "john_doe", Email: "john.doe@test.com"}).
+					Return([]string{"username", "email"}, true, nil).
+					Once()
 			},
 			expected: Expected{nil, ErrUserNameAndEmailExists},
 		},
 		{
-			description: "fails when some field is duplicated but unhandled",
+			description: "fails when the password is invalid",
 			username:    "john_doe",
 			email:       "john.doe@test.com",
-			password:    "password",
+			password:    "secret",
 			requiredMocks: func() {
-				user := &models.User{
-					UserData: models.UserData{
-						Name:     "john_doe",
-						Email:    "john.doe@test.com",
-						Username: "john_doe",
-					},
-					UserPassword: models.UserPassword{
-						Password: hashPassword("password"),
-					},
-					Confirmed:     true,
-					CreatedAt:     clock.Now(),
-					MaxNamespaces: MaxNumberNamespacesCommunity,
-				}
-				mock.On("UserCreate", ctx, user).Return(store.ErrDuplicate).Once()
-				mock.On("UserGetByUsername", ctx, "john_doe").Return(nil, nil).Once()
-				mock.On("UserGetByEmail", ctx, "john.doe@test.com").Return(nil, nil).Once()
+				mock.
+					On("UserConflicts", ctx, &models.UserConflicts{Username: "john_doe", Email: "john.doe@test.com"}).
+					Return([]string{}, false, nil).
+					Once()
+				hashMock.
+					On("Do", "secret").
+					Return("", errors.New("error")).
+					Once()
 			},
-			expected: Expected{nil, ErrUserUnhandledDuplicate},
+			expected: Expected{nil, ErrUserPasswordInvalid},
 		},
 		{
 			description: "fails creates a user",
 			username:    "john_doe",
 			email:       "john.doe@test.com",
-			password:    "password",
+			password:    "secret",
 			requiredMocks: func() {
+				mock.
+					On("UserConflicts", ctx, &models.UserConflicts{Username: "john_doe", Email: "john.doe@test.com"}).
+					Return([]string{}, false, nil).
+					Once()
+				hashMock.
+					On("Do", "secret").
+					Return("$2a$10$V/6N1wsjheBVvWosPfv02uf4WAOb9lmp8YVVCIa2UYuFV4OJby7Yi", nil).
+					Once()
+
 				user := &models.User{
+					Origin: models.UserOriginLocal,
 					UserData: models.UserData{
 						Name:     "john_doe",
 						Email:    "john.doe@test.com",
 						Username: "john_doe",
 					},
-					UserPassword: models.UserPassword{
-						Password: hashPassword("password"),
+					Password: models.UserPassword{
+						Plain: "secret",
+						Hash:  "$2a$10$V/6N1wsjheBVvWosPfv02uf4WAOb9lmp8YVVCIa2UYuFV4OJby7Yi",
 					},
-					Confirmed:     true,
+					Status:        models.UserStatusConfirmed,
 					CreatedAt:     clock.Now(),
 					MaxNamespaces: MaxNumberNamespacesCommunity,
+					Preferences: models.UserPreferences{
+						AuthMethods: []models.UserAuthMethod{models.UserAuthMethodLocal},
+					},
 				}
-				mock.On("UserCreate", ctx, user).Return(errors.New("error")).Once()
+				mock.On("UserCreate", ctx, user).Return("", errors.New("error")).Once()
 			},
 			expected: Expected{nil, ErrCreateNewUser},
 		},
@@ -229,35 +156,55 @@ func TestUserCreate(t *testing.T) {
 			description: "successfully creates a user",
 			username:    "john_doe",
 			email:       "john.doe@test.com",
-			password:    "password",
+			password:    "secret",
 			requiredMocks: func() {
+				mock.
+					On("UserConflicts", ctx, &models.UserConflicts{Username: "john_doe", Email: "john.doe@test.com"}).
+					Return([]string{}, false, nil).
+					Once()
+				hashMock.
+					On("Do", "secret").
+					Return("$2a$10$V/6N1wsjheBVvWosPfv02uf4WAOb9lmp8YVVCIa2UYuFV4OJby7Yi", nil).
+					Once()
+
 				user := &models.User{
+					Origin: models.UserOriginLocal,
 					UserData: models.UserData{
 						Name:     "john_doe",
 						Email:    "john.doe@test.com",
 						Username: "john_doe",
 					},
-					UserPassword: models.UserPassword{
-						Password: hashPassword("password"),
+					Password: models.UserPassword{
+						Plain: "secret",
+						Hash:  "$2a$10$V/6N1wsjheBVvWosPfv02uf4WAOb9lmp8YVVCIa2UYuFV4OJby7Yi",
 					},
-					Confirmed:     true,
+					Status:        models.UserStatusConfirmed,
 					CreatedAt:     clock.Now(),
 					MaxNamespaces: MaxNumberNamespacesCommunity,
+					Preferences: models.UserPreferences{
+						AuthMethods: []models.UserAuthMethod{models.UserAuthMethodLocal},
+					},
 				}
-				mock.On("UserCreate", ctx, user).Return(nil).Once()
+				mock.On("UserCreate", ctx, user).Return("000000000000000000000000", nil).Once()
+				mock.On("SystemSet", ctx, "setup", true).Return(nil).Once()
 			},
 			expected: Expected{&models.User{
+				Origin: models.UserOriginLocal,
 				UserData: models.UserData{
 					Name:     "john_doe",
 					Email:    "john.doe@test.com",
 					Username: "john_doe",
 				},
-				UserPassword: models.UserPassword{
-					Password: hashPassword("password"),
+				Password: models.UserPassword{
+					Plain: "secret",
+					Hash:  "$2a$10$V/6N1wsjheBVvWosPfv02uf4WAOb9lmp8YVVCIa2UYuFV4OJby7Yi",
 				},
-				Confirmed:     true,
+				Status:        models.UserStatusConfirmed,
 				CreatedAt:     clock.Now(),
 				MaxNamespaces: MaxNumberNamespacesCommunity,
+				Preferences: models.UserPreferences{
+					AuthMethods: []models.UserAuthMethod{models.UserAuthMethodLocal},
+				},
 			}, nil},
 		},
 	}
@@ -267,7 +214,7 @@ func TestUserCreate(t *testing.T) {
 			tc.requiredMocks()
 
 			service := NewService(store.Store(mock))
-			user, err := service.UserCreate(ctx, tc.username, tc.password, tc.email)
+			user, err := service.UserCreate(ctx, &inputs.UserCreate{Username: tc.username, Password: tc.password, Email: tc.email})
 
 			assert.Equal(t, tc.expected, Expected{user, err})
 		})
@@ -276,7 +223,7 @@ func TestUserCreate(t *testing.T) {
 	mock.AssertExpectations(t)
 }
 
-func TestDelUser(t *testing.T) {
+func TestUserDelete(t *testing.T) {
 	mock := new(mocks.Store)
 	ctx := context.TODO()
 
@@ -307,7 +254,7 @@ func TestDelUser(t *testing.T) {
 					},
 				}
 				mock.On("UserGetByUsername", ctx, "john_doe").Return(user, nil).Once()
-				mock.On("UserDetachInfo", ctx, "507f191e810c19729de860ea").Return(nil, errors.New("error")).Once()
+				mock.On("UserGetInfo", ctx, "507f191e810c19729de860ea").Return(nil, errors.New("error")).Once()
 			},
 			expected: ErrNamespaceNotFound,
 		},
@@ -325,7 +272,7 @@ func TestDelUser(t *testing.T) {
 				}
 				mock.On("UserGetByUsername", ctx, "john_doe").Return(user, nil).Once()
 
-				namespaceOwned := []*models.Namespace{
+				namespaceOwned := []models.Namespace{
 					{
 						Name:     "namespace1",
 						Owner:    "507f191e810c19729de860ea",
@@ -347,14 +294,14 @@ func TestDelUser(t *testing.T) {
 						CreatedAt: clock.Now(),
 					},
 				}
-				namespaceMember := []*models.Namespace{
+				namespaceMember := []models.Namespace{
 					{
 						Name:     "namespace3",
 						Owner:    "507f191e810c19729de86000",
 						TenantID: "30000000-0000-0000-0000-000000000000",
 						Members: []models.Member{
-							{ID: "507f191e810c19729de86000", Role: guard.RoleObserver},
-							{ID: "507f191e810c19729de860ea", Role: guard.RoleObserver},
+							{ID: "507f191e810c19729de86000", Role: authorizer.RoleObserver},
+							{ID: "507f191e810c19729de860ea", Role: authorizer.RoleObserver},
 						},
 						Settings: &models.NamespaceSettings{
 							SessionRecord: true,
@@ -366,8 +313,8 @@ func TestDelUser(t *testing.T) {
 						Owner:    "507f191e810c19729de86000",
 						TenantID: "tenantID1",
 						Members: []models.Member{
-							{ID: "507f191e810c19729de86000", Role: guard.RoleObserver},
-							{ID: "507f191e810c19729de860ea", Role: guard.RoleObserver},
+							{ID: "507f191e810c19729de86000", Role: authorizer.RoleObserver},
+							{ID: "507f191e810c19729de860ea", Role: authorizer.RoleObserver},
 						},
 						Settings: &models.NamespaceSettings{
 							SessionRecord: true,
@@ -376,9 +323,9 @@ func TestDelUser(t *testing.T) {
 					},
 				}
 
-				mock.On("UserDetachInfo", ctx, "507f191e810c19729de860ea").Return(map[string][]*models.Namespace{
-					"owner":  namespaceOwned,
-					"member": namespaceMember,
+				mock.On("UserGetInfo", ctx, "507f191e810c19729de860ea").Return(&models.UserInfo{
+					OwnedNamespaces:      namespaceOwned,
+					AssociatedNamespaces: namespaceMember,
 				}, nil)
 
 				for _, v := range namespaceOwned {
@@ -399,7 +346,7 @@ func TestDelUser(t *testing.T) {
 			tc.requiredMocks()
 
 			service := NewService(store.Store(mock))
-			err := service.UserDelete(ctx, tc.username)
+			err := service.UserDelete(ctx, &inputs.UserDelete{Username: tc.username})
 			assert.Equal(t, tc.expected, err)
 		})
 	}
@@ -407,8 +354,11 @@ func TestDelUser(t *testing.T) {
 	mock.AssertExpectations(t)
 }
 
-func TestResetUserPassword(t *testing.T) {
+func TestUserResetPassword(t *testing.T) {
 	mock := new(mocks.Store)
+	hashMock := &hashmock.Hasher{}
+	hash.Backend = hashMock
+
 	ctx := context.TODO()
 
 	cases := []struct {
@@ -418,14 +368,6 @@ func TestResetUserPassword(t *testing.T) {
 		requiredMocks func()
 		expected      error
 	}{
-		{
-			description: "fails when the password is invalid",
-			username:    "john_doe",
-			password:    "ab",
-			requiredMocks: func() {
-			},
-			expected: ErrUserPasswordInvalid,
-		},
 		{
 			description: "fails when could not find a user",
 			username:    "john_doe",
@@ -438,36 +380,42 @@ func TestResetUserPassword(t *testing.T) {
 		{
 			description: "fails to reset the user password",
 			username:    "john_doe",
-			password:    "password",
+			password:    "secret",
 			requiredMocks: func() {
-				user := &models.User{
-					ID: "507f191e810c19729de860ea",
-					UserData: models.UserData{
-						Name:     "John Doe",
-						Email:    "john.doe@test.com",
-						Username: "john_doe",
-					},
-				}
+				user := &models.User{ID: "507f191e810c19729de860ea"}
+
 				mock.On("UserGetByUsername", ctx, "john_doe").Return(user, nil).Once()
-				mock.On("UserUpdatePassword", ctx, hashPassword("password"), "507f191e810c19729de860ea").Return(errors.New("error")).Once()
+
+				hashMock.
+					On("Do", "secret").
+					Return("$2a$10$V/6N1wsjheBVvWosPfv02uf4WAOb9lmp8YWQCIa2UYuFV4OJby7Yi", nil).
+					Once()
+
+				mock.
+					On("UserUpdate", ctx, "507f191e810c19729de860ea", &models.UserChanges{Password: "$2a$10$V/6N1wsjheBVvWosPfv02uf4WAOb9lmp8YWQCIa2UYuFV4OJby7Yi"}).
+					Return(errors.New("error")).
+					Once()
 			},
 			expected: ErrFailedUpdateUser,
 		},
 		{
 			description: "successfully reset the user password",
 			username:    "john_doe",
-			password:    "password",
+			password:    "secret",
 			requiredMocks: func() {
-				user := &models.User{
-					ID: "507f191e810c19729de860ea",
-					UserData: models.UserData{
-						Name:     "John Doe",
-						Email:    "john.doe@test.com",
-						Username: "john_doe",
-					},
-				}
+				user := &models.User{ID: "507f191e810c19729de860ea"}
+
 				mock.On("UserGetByUsername", ctx, "john_doe").Return(user, nil).Once()
-				mock.On("UserUpdatePassword", ctx, hashPassword("password"), "507f191e810c19729de860ea").Return(nil).Once()
+
+				hashMock.
+					On("Do", "secret").
+					Return("$2a$10$V/6N1wsjheBVvWosPfv02uf4WAOb9lmp8YWQCIa2UYuFV4OJby7Yi", nil).
+					Once()
+
+				mock.
+					On("UserUpdate", ctx, "507f191e810c19729de860ea", &models.UserChanges{Password: "$2a$10$V/6N1wsjheBVvWosPfv02uf4WAOb9lmp8YWQCIa2UYuFV4OJby7Yi"}).
+					Return(nil).
+					Once()
 			},
 			expected: nil,
 		},
@@ -477,7 +425,7 @@ func TestResetUserPassword(t *testing.T) {
 		t.Run(tc.description, func(t *testing.T) {
 			tc.requiredMocks()
 			service := NewService(store.Store(mock))
-			err := service.UserUpdate(ctx, tc.username, tc.password)
+			err := service.UserUpdate(ctx, &inputs.UserUpdate{Username: tc.username, Password: tc.password})
 			assert.Equal(t, tc.expected, err)
 		})
 	}

@@ -7,17 +7,23 @@ import (
 
 	gliderssh "github.com/gliderlabs/ssh"
 	"github.com/pires/go-proxyproto"
+	"github.com/shellhub-io/shellhub/pkg/cache"
 	"github.com/shellhub-io/shellhub/pkg/httptunnel"
-	"github.com/shellhub-io/shellhub/ssh/pkg/metadata"
+	"github.com/shellhub-io/shellhub/ssh/pkg/target"
 	"github.com/shellhub-io/shellhub/ssh/server/auth"
 	"github.com/shellhub-io/shellhub/ssh/server/channels"
-	"github.com/shellhub-io/shellhub/ssh/server/handler"
+	"github.com/shellhub-io/shellhub/ssh/session"
 	log "github.com/sirupsen/logrus"
 )
 
 type Options struct {
-	ConnectTimeout time.Duration `envconfig:"connect_timeout" default:"30s"`
-	RedisURI       string        `envconfig:"redis_uri" default:"redis://redis:6379"`
+	ConnectTimeout time.Duration
+	// TODO: add default value for RECORD_URL.
+	RecordURL string
+	// Allows SSH to connect with an agent via a public key when the agent version is less than 0.6.0.
+	// Agents 0.5.x or earlier do not validate the public key request and may panic.
+	// Please refer to: https://github.com/shellhub-io/shellhub/issues/3453
+	AllowPublickeyAccessBelow060 bool
 }
 
 type Server struct {
@@ -26,36 +32,71 @@ type Server struct {
 	tunnel *httptunnel.Tunnel
 }
 
-// NewServer create a new ShellHub's Connect server.
-func NewServer(opts *Options, tunnel *httptunnel.Tunnel) *Server {
+func NewServer(opts *Options, tunnel *httptunnel.Tunnel, cache cache.Cache) *Server {
 	server := &Server{ // nolint: exhaustruct
 		opts:   opts,
 		tunnel: tunnel,
 	}
 
 	server.sshd = &gliderssh.Server{ // nolint: exhaustruct
-		Addr:             ":2222",
+		Addr: ":2222",
+		ConnCallback: func(ctx gliderssh.Context, conn net.Conn) net.Conn {
+			ctx.SetValue("conn", conn)
+			ctx.SetValue("RECORD_URL", opts.RecordURL)
+
+			return conn
+		},
+		BannerHandler: func(ctx gliderssh.Context) string {
+			logger := log.WithFields(
+				log.Fields{
+					"uid":   ctx.SessionID(),
+					"sshid": ctx.User(),
+				})
+
+			logger.Info("new connection established")
+
+			if _, err := target.NewTarget(ctx.User()); err != nil {
+				logger.WithError(err).Error("invalid SSHID")
+
+				return "it is not a valid SSHID"
+			}
+
+			sess, err := session.NewSession(ctx, tunnel, cache)
+			if err != nil {
+				logger.WithError(err).Error("failed to create the session")
+
+				return "device is offline or cannot be reached"
+			}
+
+			if err := sess.Dial(ctx); err != nil {
+				logger.WithError(err).Error("destination device is offline or cannot be reached")
+
+				return "device is offline or cannot be reached"
+			}
+
+			if err := sess.Evaluate(ctx); err != nil {
+				logger.WithError(err).Error("destination device has a firewall to blocked it or a billing issue")
+
+				return "you cannot access the device due a policy rule"
+			}
+
+			return ""
+		},
 		PasswordHandler:  auth.PasswordHandler,
 		PublicKeyHandler: auth.PublicKeyHandler,
-		SessionRequestCallback: func(client gliderssh.Session, request string) bool {
-			metadata.StoreRequest(client.Context(), request)
-
-			return true
-		},
-		Handler: handler.SSHHandler(tunnel),
-		SubsystemHandlers: map[string]gliderssh.SubsystemHandler{
-			handler.SFTPSubsystem: handler.SFTPSubsystemHandler(tunnel),
-		},
-		LocalPortForwardingCallback: func(ctx gliderssh.Context, dhost string, dport uint32) bool {
-			return true
-		},
-		ReversePortForwardingCallback: func(ctx gliderssh.Context, bindHost string, bindPort uint32) bool {
-			return false
-		},
+		// Channels form the foundation of secure communication between clients and servers in SSH connections. A
+		// channel, in the context of SSH, is a logical conduit through which data travels securely between the client
+		// and the server. SSH channels serve as the infrastructure for executing commands, establishing shell sessions,
+		// and securely forwarding network services.
 		ChannelHandlers: map[string]gliderssh.ChannelHandler{
-			"session":                    gliderssh.DefaultSessionHandler,
-			channels.DirectTCPIPChannel:  channels.DefaultTCPIPHandler,
-			channels.DynamicTCPIPChannel: channels.DefaultTCPIPHandler,
+			channels.SessionChannel:     channels.DefaultSessionHandler(),
+			channels.DirectTCPIPChannel: channels.DefaultDirectTCPIPHandler,
+		},
+		LocalPortForwardingCallback: func(_ gliderssh.Context, _ string, _ uint32) bool {
+			return true
+		},
+		ReversePortForwardingCallback: func(_ gliderssh.Context, _ string, _ uint32) bool {
+			return false
 		},
 	}
 

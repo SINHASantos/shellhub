@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/shellhub-io/shellhub/pkg/geoip"
+	"github.com/shellhub-io/shellhub/pkg/geoip/geolite2"
 	"github.com/shellhub-io/shellhub/pkg/models"
 	"github.com/sirupsen/logrus"
 	migrate "github.com/xakep666/mongo-migrate"
@@ -16,18 +17,16 @@ import (
 var migration47 = migrate.Migration{
 	Version:     47,
 	Description: "",
-	Up: func(db *mongo.Database) error {
+	Up: migrate.MigrationFunc(func(ctx context.Context, db *mongo.Database) error {
 		logrus.WithFields(logrus.Fields{
 			"component": "migration",
 			"version":   47,
 			"action":    "Up",
 		}).Info("Applying migration up")
 
-		ctx := context.Background()
-
 		var locator geoip.Locator
 		if os.Getenv("GEOIP") == "true" {
-			locator, _ = geoip.NewGeoLite2()
+			locator, _ = geolite2.NewLocator(ctx, geolite2.FetchFromLicenseKey(os.Getenv("MAXMIND_LICENSE")))
 		} else {
 			locator = geoip.NewNullGeoLite()
 		}
@@ -55,8 +54,8 @@ var migration47 = migrate.Migration{
 		}
 
 		return nil
-	},
-	Down: func(db *mongo.Database) error {
+	}),
+	Down: migrate.MigrationFunc(func(_ context.Context, db *mongo.Database) error {
 		logrus.WithFields(logrus.Fields{
 			"component": "migration",
 			"version":   47,
@@ -81,5 +80,5 @@ var migration47 = migrate.Migration{
 		}
 
 		return nil
-	},
+	}),
 }

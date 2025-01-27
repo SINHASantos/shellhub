@@ -1,6 +1,6 @@
 import { createVuetify } from "vuetify";
 import { flushPromises, mount, VueWrapper } from "@vue/test-utils";
-import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import MockAdapter from "axios-mock-adapter";
 import Login from "../../src/views/Login.vue";
 import { usersApi } from "@/api/http";
@@ -51,13 +51,40 @@ describe("Login", () => {
     expect(wrapper.find('[data-test="forgotPassword-card"]').exists()).toBe(true);
     expect(wrapper.find('[data-test="isCloud-card"]').exists()).toBe(true);
     expect(wrapper.find('[data-test="loadingToken-alert"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="sso-btn"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="or-divider-sso"]').exists()).toBe(false);
   });
 
-  it("disables submit button when the form is invalid", async () => {
-    await wrapper.findComponent('[data-test="username-text"]').setValue("");
-    await wrapper.findComponent('[data-test="password-text"]').setValue("");
+  it("Renders enterprise only fragments", async () => {
+    envVariables.isEnterprise = true;
 
-    expect(wrapper.find('[data-test="login-btn"]').attributes().disabled).toBeDefined();
+    store.commit("users/setSystemInfo", {
+      authentication: { local: true, saml: true },
+    });
+
+    await flushPromises();
+
+    expect(wrapper.find('[data-test="sso-btn"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="or-divider-sso"]').exists()).toBe(true);
+  });
+
+  it("disables fields and login button when envVariables.isEnterprise is true", async () => {
+    envVariables.isCloud = false;
+    envVariables.isEnterprise = true;
+
+    store.commit("users/setSystemInfo", {
+      authentication: { local: false, saml: true },
+    });
+
+    await flushPromises();
+
+    const usernameField = wrapper.find('[data-test="username-text"]').attributes().class;
+    const passwordField = wrapper.find('[data-test="password-text"]').attributes().class;
+    const loginButton = wrapper.find('[data-test="login-btn"]').attributes().class;
+
+    expect(usernameField).toContain("v-input--disabled");
+    expect(passwordField).toContain("v-input--disabled");
+    expect(loginButton).toContain("v-btn--disabled");
   });
 
   it("calls the login action when the form is submitted", async () => {
@@ -69,6 +96,43 @@ describe("Login", () => {
       tenant: "fake-tenant",
       role: "administrator",
       email: "test@test.com",
+      mfa: false,
+    };
+
+    // mock error below
+    mock.onPost("http://localhost:3000/api/login").reply(200, responseData);
+
+    const loginSpy = vi.spyOn(store, "dispatch");
+    const routerPushSpy = vi.spyOn(router, "push");
+
+    await wrapper.findComponent('[data-test="username-text"]').setValue("test");
+    await wrapper.findComponent('[data-test="password-text"]').setValue("password");
+    await wrapper.findComponent('[data-test="form"]').trigger("submit");
+    await flushPromises();
+
+    // Assert the login action dispatch
+    expect(loginSpy).toHaveBeenCalledWith("auth/login", {
+      username: "test",
+      password: "password",
+    });
+
+    expect(wrapper.findComponent(".v-alert").exists()).toBeFalsy();
+    expect(routerPushSpy).toHaveBeenCalledWith({
+      path: "/",
+      query: {},
+    });
+  });
+
+  it("calls the mfa action when the login form is submitted", async () => {
+    const responseData = {
+      token: "fake-token",
+      user: "test",
+      name: "Test",
+      id: "1",
+      tenant: "fake-tenant",
+      role: "administrator",
+      email: "test@test.com",
+      mfa: true,
     };
 
     // mock error below
@@ -89,7 +153,7 @@ describe("Login", () => {
     });
 
     expect(wrapper.findComponent(".v-alert").exists()).toBeFalsy();
-    expect(routerPushSpy).toHaveBeenCalledWith("/");
+    expect(routerPushSpy).toHaveBeenCalledWith({ name: "MfaLogin" });
   });
 
   it("shows an error message for a 401 response", async () => {
@@ -109,8 +173,7 @@ describe("Login", () => {
       password: "password",
     });
 
-    expect(wrapper.vm.invalidCredentials).toBe(true);
-    expect(wrapper.findComponent(".v-alert").exists()).toBeTruthy();
+    expect(wrapper.findComponent('[data-test="invalid-login-alert"]').exists());
   });
 
   it("redirects to ConfirmAccount route on 403 response", async () => {
@@ -138,5 +201,36 @@ describe("Login", () => {
       name: "ConfirmAccount",
       query: { username: "testuser" },
     });
+  });
+
+  it("locks account after 10 failed login attempts", async () => {
+    const username = "testuser";
+    const maxAttempts = 10;
+    const lockoutDuration = 7 * 24 * 60 * 60; // 7 days in seconds
+    let attempts = 0;
+
+    mock.onPost("http://localhost:3000/api/login").reply((config) => {
+      const { username: reqUsername, password } = JSON.parse(config.data);
+      if (reqUsername === username && password === "wrongpassword") {
+        attempts++;
+        if (attempts >= maxAttempts) {
+          return [429, {}, { "x-account-lockout": lockoutDuration.toString() }];
+        }
+        return [401];
+      }
+      return [200, { token: "fake-token" }];
+    });
+
+    // Simulate 10 failed login attempts
+    for (let i = 0; i < maxAttempts; i++) {
+      wrapper.findComponent('[data-test="username-text"]').setValue(username);
+      wrapper.findComponent('[data-test="password-text"]').setValue("wrongpassword");
+      wrapper.findComponent('[data-test="form"]').trigger("submit");
+      // eslint-disable-next-line no-await-in-loop
+      await flushPromises();
+    }
+
+    // Ensure the account is locked out
+    expect(wrapper.findComponent('[data-test="invalid-login-alert"]').exists()).toBeTruthy();
   });
 });

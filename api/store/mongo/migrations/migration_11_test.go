@@ -4,10 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/shellhub-io/shellhub/api/pkg/dbtest"
 	"github.com/shellhub-io/shellhub/pkg/clock"
 	"github.com/shellhub-io/shellhub/pkg/models"
-	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	migrate "github.com/xakep666/mongo-migrate"
 	"go.mongodb.org/mongo-driver/bson"
@@ -15,23 +13,22 @@ import (
 )
 
 func TestMigration11(t *testing.T) {
-	logrus.Info("Testing Migration 11 - Test if the private_keys has ttl system")
+	t.Cleanup(func() {
+		assert.NoError(t, srv.Reset())
+	})
 
-	db := dbtest.DBServer{}
-	defer db.Stop()
-
-	migrates := migrate.NewMigrate(db.Client().Database("test"), GenerateMigrations()[:11]...)
-	err := migrates.Up(migrate.AllAvailable)
+	migrates := migrate.NewMigrate(c.Database("test"), GenerateMigrations()[:11]...)
+	err := migrates.Up(context.Background(), migrate.AllAvailable)
 	assert.NoError(t, err)
 
 	pk := models.PrivateKey{
 		CreatedAt: clock.Now(),
 	}
 
-	_, err = db.Client().Database("test").Collection("private_keys").InsertOne(context.TODO(), pk)
+	_, err = c.Database("test").Collection("private_keys").InsertOne(context.TODO(), pk)
 	assert.NoError(t, err)
 
-	index := db.Client().Database("test").Collection("private_keys").Indexes()
+	index := c.Database("test").Collection("private_keys").Indexes()
 
 	cursor, err := index.List(context.TODO())
 	assert.NoError(t, err)

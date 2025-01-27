@@ -1,30 +1,39 @@
 <template>
-  <v-card class="bg-v-theme-surface">
-    <v-tabs background-color="secondary" stacked color="primary">
-      <v-tab to="/devices"> Device List </v-tab>
-      <v-tab to="/devices/pending"> Pending </v-tab>
+  <v-btn-group
+    color="a"
+    divided
+    class="mb-4 border"
+  >
+    <v-btn
+      v-for="state in states"
+      :to="state.to"
+      variant="flat"
+      :active="isActive(state.to)"
+      active-color="secondary"
+      class="bg-background"
+      v-bind:key="state.to"
+    >
+      {{ state.title }}
+    </v-btn>
+  </v-btn-group>
 
-      <v-tab to="/devices/rejected"> Rejected </v-tab>
-    </v-tabs>
-
-    <v-divider />
-  </v-card>
-
-  <v-card>
+  <div>
     <router-view />
-  </v-card>
+  </div>
 </template>
 
-<script lang="ts">
-import { defineComponent, ref } from "vue";
+<script setup lang="ts">
+import { useRoute } from "vue-router";
 
-export default defineComponent({
-  name: "Device",
-  setup() {
-    const tab = ref("list");
-    return {
-      tab,
-    };
-  },
-});
+const states = [
+  { to: "/devices", title: "Accepted" },
+  { to: "/devices/pending", title: "Pending" },
+  { to: "/devices/rejected", title: "Rejected" },
+];
+
+const isActive = (to: string) => {
+  const route = useRoute();
+  return route.path === to;
+};
+
 </script>

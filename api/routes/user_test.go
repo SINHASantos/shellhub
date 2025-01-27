@@ -8,91 +8,144 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shellhub-io/shellhub/api/pkg/guard"
 	svc "github.com/shellhub-io/shellhub/api/services"
 	"github.com/shellhub-io/shellhub/api/services/mocks"
+	"github.com/shellhub-io/shellhub/pkg/api/authorizer"
 	"github.com/shellhub-io/shellhub/pkg/api/requests"
 	"github.com/stretchr/testify/assert"
 	gomock "github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
-func TestUpdateUserData(t *testing.T) {
-	mock := new(mocks.Service)
+func TestUpdateUser(t *testing.T) {
+	type Expected struct {
+		status int
+	}
+
+	svcMock := new(mocks.Service)
 
 	cases := []struct {
-		title             string
-		uid               string
-		updatePayloadMock requests.UserDataUpdate
-		requiredMocks     func(updatePayloadMock requests.UserDataUpdate)
-		expectedStatus    int
+		description   string
+		headers       map[string]string
+		body          requests.UpdateUser
+		requiredMocks func()
+		expected      Expected
 	}{
 		{
-			title: "fails when bind fails to validate uid",
-			uid:   "1234",
-			updatePayloadMock: requests.UserDataUpdate{
-				Name:     "new name",
-				Username: "usernameteste",
-				Email:    "newemail@example.com",
+			description: "fails when bind fails to validate e-mail",
+			headers: map[string]string{
+				"X-ID":   "000000000000000000000000",
+				"X-Role": "owner",
 			},
-			requiredMocks:  func(updatePayloadMock requests.UserDataUpdate) {},
-			expectedStatus: http.StatusBadRequest,
+			body: requests.UpdateUser{
+				Name:          "John Doe",
+				Username:      "john_doe",
+				Email:         "invalid.com",
+				RecoveryEmail: "invalid.com",
+			},
+			requiredMocks: func() {},
+			expected:      Expected{http.StatusBadRequest},
 		},
 		{
-			title: "fails when try to updating a non-existing user",
-			uid:   "1234",
-			updatePayloadMock: requests.UserDataUpdate{
-				UserParam: requests.UserParam{
-					ID: "1234",
-				},
-				Name:     "new name",
-				Username: "usernameteste",
-				Email:    "newemail@example.com",
+			description: "fails when bind fails to validate username",
+			headers: map[string]string{
+				"X-ID":   "000000000000000000000000",
+				"X-Role": "owner",
 			},
-			requiredMocks: func(updatePayloadMock requests.UserDataUpdate) {
-				mock.On("UpdateDataUser", gomock.Anything, "1234", updatePayloadMock).Return(nil, svc.ErrUserNotFound)
+			body: requests.UpdateUser{
+				Name:          "John Doe",
+				Username:      "_",
+				Email:         "john.doe@test.com",
+				RecoveryEmail: "john.doe@test.com",
 			},
-			expectedStatus: http.StatusNotFound,
+			requiredMocks: func() {},
+			expected:      Expected{http.StatusBadRequest},
 		},
 		{
-			title: "success when try to updating an existing user",
-			uid:   "123",
-			updatePayloadMock: requests.UserDataUpdate{
-				UserParam: requests.UserParam{
-					ID: "123",
-				},
-				Name:     "new name",
-				Username: "usernameteste",
-				Email:    "newemail@example.com",
+			description: "fails when try to updating a non-existing user",
+			headers: map[string]string{
+				"X-ID":   "000000000000000000000000",
+				"X-Role": "owner",
 			},
-			requiredMocks: func(updatePayloadMock requests.UserDataUpdate) {
-				mock.On("UpdateDataUser", gomock.Anything, "123", updatePayloadMock).Return(nil, nil)
+			body: requests.UpdateUser{
+				Name:          "John Doe",
+				Username:      "john_doe",
+				Email:         "john.doe@test.com",
+				RecoveryEmail: "john.doe@test.com",
 			},
-			expectedStatus: http.StatusOK,
+			requiredMocks: func() {
+				svcMock.
+					On(
+						"UpdateUser",
+						gomock.Anything,
+						&requests.UpdateUser{
+							UserID:        "000000000000000000000000",
+							Name:          "John Doe",
+							Username:      "john_doe",
+							Email:         "john.doe@test.com",
+							RecoveryEmail: "john.doe@test.com",
+						},
+					).
+					Return(nil, svc.ErrUserNotFound).
+					Once()
+			},
+			expected: Expected{http.StatusNotFound},
+		},
+		{
+			description: "success when try to updating an existing user",
+			body: requests.UpdateUser{
+				Name:          "John Doe",
+				Username:      "john_doe",
+				Email:         "john.doe@test.com",
+				RecoveryEmail: "john.doe@test.com",
+			},
+			headers: map[string]string{
+				"X-ID":   "000000000000000000000000",
+				"X-Role": "owner",
+			},
+			requiredMocks: func() {
+				svcMock.
+					On(
+						"UpdateUser",
+						gomock.Anything,
+						&requests.UpdateUser{
+							UserID:        "000000000000000000000000",
+							Name:          "John Doe",
+							Username:      "john_doe",
+							Email:         "john.doe@test.com",
+							RecoveryEmail: "john.doe@test.com",
+						},
+					).
+					Return(nil, nil).
+					Once()
+			},
+			expected: Expected{http.StatusOK},
 		},
 	}
 
 	for _, tc := range cases {
-		t.Run(tc.title, func(t *testing.T) {
-			tc.requiredMocks(tc.updatePayloadMock)
+		t.Run(tc.description, func(t *testing.T) {
+			tc.requiredMocks()
 
-			jsonData, err := json.Marshal(tc.updatePayloadMock)
-			if err != nil {
-				assert.NoError(t, err)
+			data, err := json.Marshal(tc.body)
+			require.NoError(t, err)
+
+			req := httptest.NewRequest(http.MethodPatch, "/api/users", strings.NewReader(string(data)))
+			req.Header.Set("Content-Type", "application/json")
+			for k, v := range tc.headers {
+				req.Header.Set(k, v)
 			}
 
-			req := httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/api/users/%s/data", tc.uid), strings.NewReader(string(jsonData)))
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Role", guard.RoleOwner)
 			rec := httptest.NewRecorder()
 
-			e := NewRouter(mock)
+			e := NewRouter(svcMock)
 			e.ServeHTTP(rec, req)
 
-			assert.Equal(t, tc.expectedStatus, rec.Result().StatusCode)
+			assert.Equal(t, tc.expected, Expected{rec.Result().StatusCode})
 		})
 	}
 
-	mock.AssertExpectations(t)
+	svcMock.AssertExpectations(t)
 }
 
 func TestUpdateUserPassword(t *testing.T) {
@@ -113,7 +166,7 @@ func TestUpdateUserPassword(t *testing.T) {
 					ID: "123",
 				},
 			},
-			requiredMocks:  func(updatePayloadMock requests.UserPasswordUpdate) {},
+			requiredMocks:  func(_ requests.UserPasswordUpdate) {},
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
@@ -126,20 +179,20 @@ func TestUpdateUserPassword(t *testing.T) {
 				CurrentPassword: "fail",
 				NewPassword:     "new_password",
 			},
-			requiredMocks:  func(updatePayloadMock requests.UserPasswordUpdate) {},
+			requiredMocks:  func(_ requests.UserPasswordUpdate) {},
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
-			title: "fails when validate because the tag does not have a max of 30 characters",
+			title: "fails when validate because the tag does not have a max of 32 characters",
 			uid:   "123",
 			updatePayloadMock: requests.UserPasswordUpdate{
 				UserParam: requests.UserParam{
 					ID: "123",
 				},
-				CurrentPassword: "1a3b8f0c2e5d7g9i4k6m8o2q5s7u9w1",
+				CurrentPassword: "1a3b8f0c2e5d7g9i4k6m8o2q5s7u9w1v7",
 				NewPassword:     "new_password",
 			},
-			requiredMocks:  func(updatePayloadMock requests.UserPasswordUpdate) {},
+			requiredMocks:  func(_ requests.UserPasswordUpdate) {},
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
@@ -152,20 +205,20 @@ func TestUpdateUserPassword(t *testing.T) {
 				CurrentPassword: "new_password",
 				NewPassword:     "fail",
 			},
-			requiredMocks:  func(updatePayloadMock requests.UserPasswordUpdate) {},
+			requiredMocks:  func(_ requests.UserPasswordUpdate) {},
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
-			title: "fails when validate because the tag does not have a max of 30 characters",
+			title: "fails when validate because the tag does not have a max of 32 characters",
 			uid:   "123",
 			updatePayloadMock: requests.UserPasswordUpdate{
 				UserParam: requests.UserParam{
 					ID: "123",
 				},
 				CurrentPassword: "new_password",
-				NewPassword:     "1a3b8f0c2e5d7g9i4k6m8o2q5s7u9w1",
+				NewPassword:     "1a3b8f0c2e5d7g9i4k6m8o2q5s7u9w1v7",
 			},
-			requiredMocks:  func(updatePayloadMock requests.UserPasswordUpdate) {},
+			requiredMocks:  func(_ requests.UserPasswordUpdate) {},
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
@@ -178,7 +231,7 @@ func TestUpdateUserPassword(t *testing.T) {
 				NewPassword:     "duplicate",
 				CurrentPassword: "duplicate",
 			},
-			requiredMocks:  func(updatePayloadMock requests.UserPasswordUpdate) {},
+			requiredMocks:  func(_ requests.UserPasswordUpdate) {},
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
@@ -224,7 +277,7 @@ func TestUpdateUserPassword(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/api/users/%s/password", tc.uid), strings.NewReader(string(jsonData)))
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Role", guard.RoleOwner)
+			req.Header.Set("X-Role", authorizer.RoleOwner.String())
 			rec := httptest.NewRecorder()
 
 			e := NewRouter(mock)

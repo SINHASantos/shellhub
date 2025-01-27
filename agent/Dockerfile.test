@@ -1,0 +1,38 @@
+FROM golang:1.22.6-alpine3.19
+
+ARG GOPROXY
+
+RUN apk add --update ca-certificates util-linux setpriv bash openssh
+
+RUN ln -sf /bin/bash /bin/sh
+
+WORKDIR $GOPATH/src/github.com/shellhub-io/shellhub
+
+COPY ./go.mod ./
+
+WORKDIR $GOPATH/src/github.com/shellhub-io/shellhub/agent
+
+COPY ./agent/go.mod ./agent/go.sum ./
+
+RUN go mod download
+
+ARG SHELLHUB_VERSION=latest
+ARG GOPROXY
+
+COPY ./pkg $GOPATH/src/github.com/shellhub-io/shellhub/pkg
+COPY ./agent .
+
+WORKDIR $GOPATH/src/github.com/shellhub-io/shellhub
+
+RUN go mod download
+
+WORKDIR $GOPATH/src/github.com/shellhub-io/shellhub/agent
+
+RUN go build -ldflags "-X main.AgentVersion=${SHELLHUB_VERSION}"
+
+ARG USERNAME 
+ARG PASSWORD
+
+RUN echo "${USERNAME}:${PASSWORD}" | chpasswd
+
+ENTRYPOINT ./agent

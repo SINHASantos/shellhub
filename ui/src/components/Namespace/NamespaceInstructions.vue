@@ -1,8 +1,7 @@
 <template>
-  <v-dialog v-model="showNoNamespace" :retain-focus="false" persistent max-width="650px">
+  <v-dialog v-model="showNoNamespace" :retain-focus="false" max-width="650px">
     <v-card
       v-model="showNoNamespace"
-
       class="bg-v-theme-surface"
     >
       <v-card-title class="bg-primary">
@@ -35,68 +34,52 @@
         </div>
       </v-card-text>
 
-      <v-card-actions>
+      <v-card-actions v-if="!openVersion">
         <v-spacer />
         <div>
+          <v-btn
+            color="primary"
+            @click="showNamespaceAdd = true"
+            data-test="save-btn">
+            Add Namespace
+          </v-btn>
           <NamespaceAdd
-            v-if="!openVersion"
+            v-model="showNamespaceAdd"
             enableSwitchIn
             data-test="namespaceAdd-component"
           />
         </div>
       </v-card-actions>
     </v-card>
-
-    <NamespaceAdd
-      v-if="!openVersion"
-      :show="dialogAdd"
-      :firstNamespace="autoSwitch"
-      data-test="namespaceAdd-component"
-    />
   </v-dialog>
 </template>
 
-<script lang="ts">
-import { defineComponent, ref, computed } from "vue";
+<script setup lang="ts">
+import { computed, ref } from "vue";
+import { useRoute } from "vue-router";
 import { envVariables } from "../../envVariables";
 import NamespaceAdd from "./NamespaceAdd.vue";
 
-export default defineComponent({
-  props: {
-    show: {
-      type: Boolean,
-      required: true,
-    },
+const route = useRoute();
+const props = defineProps({
+  show: {
+    type: Boolean,
+    required: true,
   },
-  setup(props, ctx) {
-    const dialogAdd = ref(false);
-
-    const showNoNamespace = computed({
-      get() {
-        return props.show;
-      },
-      set(value: boolean) {
-        ctx.emit("update", value);
-      },
-    });
-
-    const openVersion = computed(() => !envVariables.isEnterprise);
-
-    const autoSwitch = computed(() => localStorage.getItem("tenant") === "");
-
-    const close = () => {
-      showNoNamespace.value = false;
-      ctx.emit("update", false);
-    };
-
-    return {
-      dialogAdd,
-      openVersion,
-      showNoNamespace,
-      autoSwitch,
-      close,
-    };
-  },
-  components: { NamespaceAdd },
 });
+
+const emit = defineEmits(["update"]);
+
+const showNamespaceAdd = ref(false);
+
+const showNoNamespace = computed({
+  get() {
+    return route.name === "AcceptInvite" ? false : props.show;
+  },
+  set(value: boolean) {
+    emit("update", value);
+  },
+});
+
+const openVersion = computed(() => !envVariables.isCloud && !envVariables.isEnterprise);
 </script>

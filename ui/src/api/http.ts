@@ -19,7 +19,6 @@ const newAxiosInstance = (setupInterceptor = true): AxiosInstance => {
   if (setupInterceptor) setupInterceptorsTo(instance);
   return instance;
 };
-
 const sessionsApi = new axiosTs.SessionsApi(
   configuration,
   undefined,
@@ -30,12 +29,22 @@ const devicesApi = new axiosTs.DevicesApi(
   undefined,
   newAxiosInstance(),
 );
-const defaultApi = new axiosTs.DefaultApi(
+const containersApi = new axiosTs.ContainersApi(
+  configuration,
+  undefined,
+  newAxiosInstance(),
+);
+const systemApi = new axiosTs.SystemApi(
   configuration,
   undefined,
   newAxiosInstance(),
 );
 const namespacesApi = new axiosTs.NamespacesApi(
+  configuration,
+  undefined,
+  newAxiosInstance(),
+);
+const apiKeysApi = new axiosTs.ApiKeysApi(
   configuration,
   undefined,
   newAxiosInstance(),
@@ -51,6 +60,16 @@ const tagsApi = new axiosTs.TagsApi(
   newAxiosInstance(),
 );
 const usersApi = new axiosTs.UsersApi(
+  configuration,
+  undefined,
+  newAxiosInstance(),
+);
+const mfaApi = new axiosTs.MfaApi(
+  configuration,
+  undefined,
+  newAxiosInstance(),
+);
+const tunnelApi = new axiosTs.TunnelsApi(
   configuration,
   undefined,
   newAxiosInstance(),
@@ -86,6 +105,8 @@ export const createNewClient = () => Function;
 declare module "./client/base" {
   interface BaseAPI {
     getAxios(): AxiosInstance;
+    getConfiguration(): Configuration | undefined;
+    setConfiguration(configuration: Configuration): void;
   }
 }
 
@@ -94,15 +115,51 @@ BaseAPI.prototype.getAxios = function getAxios(this: BaseAPI): AxiosInstance {
   return this.axios;
 };
 
+/** Returns the configuration */
+BaseAPI.prototype.getConfiguration = function getConfiguration(this: BaseAPI): Configuration | undefined {
+  return this.configuration;
+};
+
+/** Sets the configuration */
+BaseAPI.prototype.setConfiguration = function setConfiguration(this: BaseAPI, configuration: Configuration): void {
+  this.configuration = configuration;
+};
+
+// Reloads the configuration for all APIs
+const reloadConfiguration = () => {
+  [
+    sessionsApi,
+    devicesApi,
+    containersApi,
+    systemApi,
+    namespacesApi,
+    apiKeysApi,
+    sshApi,
+    tagsApi,
+    usersApi,
+    mfaApi,
+    tunnelApi,
+    billingApi,
+    rulesApi,
+  ].forEach((api) => {
+    api.setConfiguration(configuration);
+  });
+};
+
 export {
   configuration,
+  reloadConfiguration,
   sessionsApi,
   devicesApi,
-  defaultApi,
+  containersApi,
+  systemApi,
   namespacesApi,
+  apiKeysApi,
   sshApi,
   tagsApi,
   usersApi,
+  mfaApi,
+  tunnelApi,
   billingApi,
   rulesApi,
   announcementApi,

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
@@ -18,7 +19,7 @@ var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	Subprotocols:    []string{"binary"},
-	CheckOrigin: func(r *http.Request) bool {
+	CheckOrigin: func(_ *http.Request) bool {
 		return true
 	},
 }
@@ -43,7 +44,7 @@ func NewTunnel(connectionPath, dialerPath string) *Tunnel {
 	tunnel := &Tunnel{
 		ConnectionPath: connectionPath,
 		DialerPath:     dialerPath,
-		ConnectionHandler: func(r *http.Request) (string, error) {
+		ConnectionHandler: func(_ *http.Request) (string, error) {
 			panic("ConnectionHandler not implemented")
 		},
 		CloseHandler: func(string) {
@@ -75,14 +76,26 @@ func (t *Tunnel) Router() http.Handler {
 			return c.String(http.StatusInternalServerError, err.Error())
 		}
 
-		id, err := t.ConnectionHandler(c.Request())
+		key, err := t.ConnectionHandler(c.Request())
 		if err != nil {
 			conn.Close()
 
 			return c.String(http.StatusBadRequest, err.Error())
 		}
 
-		t.connman.Set(id, wsconnadapter.New(conn))
+		requestID := c.Request().Header.Get("X-Request-ID")
+		parts := strings.Split(key, ":")
+		tenant := parts[0]
+		device := parts[1]
+
+		t.connman.Set(
+			key,
+			wsconnadapter.
+				New(conn).
+				WithID(requestID).
+				WithDevice(tenant, device),
+			t.DialerPath,
+		)
 
 		return nil
 	})

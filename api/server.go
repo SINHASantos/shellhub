@@ -4,48 +4,74 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/getsentry/sentry-go"
-	"github.com/labstack/echo/v4"
-	echoMiddleware "github.com/labstack/echo/v4/middleware"
-	"github.com/shellhub-io/shellhub/api/pkg/echo/handlers"
-	"github.com/shellhub-io/shellhub/api/pkg/gateway"
 	"github.com/shellhub-io/shellhub/api/routes"
 	"github.com/shellhub-io/shellhub/api/services"
+	"github.com/shellhub-io/shellhub/api/store"
 	"github.com/shellhub-io/shellhub/api/store/mongo"
-	"github.com/shellhub-io/shellhub/api/workers"
-	requests "github.com/shellhub-io/shellhub/pkg/api/internalclient"
+	"github.com/shellhub-io/shellhub/api/store/mongo/options"
+	"github.com/shellhub-io/shellhub/pkg/api/internalclient"
 	storecache "github.com/shellhub-io/shellhub/pkg/cache"
-	"github.com/shellhub-io/shellhub/pkg/geoip"
-	"github.com/shellhub-io/shellhub/pkg/middleware"
+	"github.com/shellhub-io/shellhub/pkg/geoip/geolite2"
+	"github.com/shellhub-io/shellhub/pkg/worker/asynq"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
-	mongodriver "go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
-	"go.mongodb.org/mongo-driver/x/mongo/driver/connstring"
 )
 
 var serverCmd = &cobra.Command{
 	Use: "server",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx := cmd.Context()
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		ctx, cancel := context.WithCancel(cmd.Context())
+
+		sigs := make(chan os.Signal, 1)
+		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
 		cfg, ok := ctx.Value("cfg").(*config)
 		if !ok {
 			log.Fatal("Failed to retrieve environment config from context")
 		}
 
+		log.Trace("Connecting to Redis")
+
+		cache, err := storecache.NewRedisCache(cfg.RedisURI, cfg.RedisCachePoolSize)
+		if err != nil {
+			log.WithError(err).Error("Failed to configure redis store cache")
+		}
+
+		log.Info("Connected to Redis")
+
+		log.Trace("Connecting to MongoDB")
+
+		_, db, err := mongo.Connect(ctx, cfg.MongoURI)
+		if err != nil {
+			log.
+				WithError(err).
+				Fatal("unable to connect to MongoDB")
+		}
+
+		store, err := mongo.NewStore(ctx, db, cache, options.RunMigatrions)
+		if err != nil {
+			log.
+				WithError(err).
+				Fatal("failed to create the store")
+		}
+
+		log.Info("Connected to MongoDB")
+
 		go func() {
-			log.Info("Starting workers")
+			sig := <-sigs
 
-			if err := workers.StartCleaner(ctx); err != nil {
-				log.WithError(err).Fatal("Failed to start cleaner worker")
-			}
+			log.WithFields(log.Fields{
+				"signal": sig,
+			}).Info("signal received to terminate API")
 
-			log.Info("Workers started")
+			cancel()
 		}()
 
-		return startServer(cfg)
+		return startServer(ctx, cfg, store, cache)
 	},
 }
 
@@ -53,28 +79,47 @@ var serverCmd = &cobra.Command{
 // The values are load from the system environment variables.
 type config struct {
 	// MongoDB connection string (URI format)
-	MongoURI string `envconfig:"mongo_uri" default:"mongodb://mongo:27017/main"`
+	MongoURI string `env:"MONGO_URI,default=mongodb://mongo:27017/main"`
 	// Redis connection string (URI format)
-	RedisURI string `envconfig:"redis_uri" default:"redis://redis:6379"`
-	// Enable GeoIP feature.
-	//
-	// GeoIP features enable the ability to get the logitude and latitude of the client from the IP address.
-	// The feature is disabled by default. To enable it, it is required to have a `MAXMIND` database license and feed it
-	// to `SHELLHUB_MAXMIND_LICENSE` with it, and `SHELLHUB_GEOIP=true`.
-	GeoIP bool `envconfig:"geoip" default:"false"`
+	RedisURI string `env:"REDIS_URI,default=redis://redis:6379"`
+	// RedisCachePoolSize is the pool size of connections available for Redis cache.
+	RedisCachePoolSize int `env:"REDIS_CACHE_POOL_SIZE,default=0"`
 	// Session record cleanup worker schedule
-	SessionRecordCleanupSchedule string `envconfig:"session_record_cleanup_schedule" default:"@daily"`
 	// Sentry DSN.
-	SentryDSN string `envconfig:"sentry_dsn" default:""`
-}
+	SentryDSN string `env:"SENTRY_DSN,default="`
+	// AsynqGroupMaxDelay is the maximum duration to wait before processing a group of tasks.
+	//
+	// Its time unit is second.
+	//
+	// Check [https://github.com/hibiken/asynq/wiki/Task-aggregation] for more information.
+	AsynqGroupMaxDelay int `env:"ASYNQ_GROUP_MAX_DELAY,default=1"`
+	// AsynqGroupGracePeriod is the grace period has configurable upper bound: you can set a maximum aggregation delay, after which Asynq server
+	// will aggregate the tasks regardless of the remaining grace period.
+	///
+	// Its time unit is second.
+	//
+	// Check [https://github.com/hibiken/asynq/wiki/Task-aggregation] for more information.
+	AsynqGroupGracePeriod int64 `env:"ASYNQ_GROUP_GRACE_PERIOD,default=2"`
+	// AsynqGroupMaxSize is the maximum number of tasks that can be aggregated together. If that number is reached, Asynq
+	// server will aggregate the tasks immediately.
+	//
+	// Check [https://github.com/hibiken/asynq/wiki/Task-aggregation] for more information.
+	AsynqGroupMaxSize int `env:"ASYNQ_GROUP_MAX_SIZE,default=1000"`
 
-func init() {
-	if value, ok := os.LookupEnv("SHELLHUB_ENV"); ok && value == "development" {
-		log.SetLevel(log.TraceLevel)
-		log.Debug("Log level set to Trace")
-	} else {
-		log.Debug("Log level default")
-	}
+	// AsynqUniquenessTimeout defines the maximum duration, in hours, for which a unique job
+	// remains locked in the queue. If the job does not complete within this timeout, the lock
+	// is released, allowing a new instance of the job to be enqueued and executed.
+	AsynqUniquenessTimeout int `env:"ASYNQ_UNIQUENESS_TIMEOUT,default=24"`
+
+	// GeoipMirror specifies an alternative mirror URL for downloading the GeoIP databases.
+	// This field takes precedence over [GeoipMaxmindLicense]; when both are configured,
+	// GeoipMirror will be used as the primary source for database downloads.
+	GeoipMirror string `env:"MAXMIND_MIRROR,default="`
+
+	// GeoipMaxmindLicense is the MaxMind license key used to authenticate requests for
+	// downloading the GeoIP database directly from MaxMind. If [GeoipMirror] is not set,
+	// this license key will be used as the fallback method for fetching the database.
+	GeoipMaxmindLicense string `env:"MAXMIND_LICENSE,default="`
 }
 
 // startSentry initializes the Sentry client.
@@ -91,8 +136,11 @@ func startSentry(dsn string) (*sentry.Client, error) {
 			TracesSampleRate: 1,
 		})
 		if err != nil {
+			log.WithError(err).Error("Failed to create Sentry client")
+
 			return nil, err
 		}
+		log.Info("Sentry client started")
 
 		return reporter, nil
 	}
@@ -100,85 +148,80 @@ func startSentry(dsn string) (*sentry.Client, error) {
 	return nil, errors.New("sentry DSN not provided")
 }
 
-func startServer(cfg *config) error {
-	ctx := context.Background()
-
-	log.Info("Starting Sentry client")
-
-	reporter, err := startSentry(cfg.SentryDSN)
-	if err != nil {
-		log.WithField("DSN", cfg.SentryDSN).WithError(err).Warn("Failed to start Sentry")
-	} else {
-		log.Info("Sentry client started")
-	}
-
+func startServer(ctx context.Context, cfg *config, store store.Store, cache storecache.Cache) error {
 	log.Info("Starting API server")
 
-	log.Trace("Connecting to Redis")
-
-	cache, err := storecache.NewRedisCache(cfg.RedisURI)
+	apiClient, err := internalclient.NewClient(internalclient.WithAsynqWorker(cfg.RedisURI))
 	if err != nil {
-		log.WithError(err).Error("Failed to configure redis store cache")
+		log.WithError(err).
+			Fatal("failed to create the internalclient")
 	}
 
-	log.Info("Connected to Redis")
+	servicesOptions := []services.Option{}
 
-	log.Trace("Connecting to MongoDB")
+	var fetcher geolite2.GeoliteFetcher
 
-	connStr, err := connstring.ParseAndValidate(cfg.MongoURI)
-	if err != nil {
-		log.WithError(err).Fatal("Invalid Mongo URI format")
+	switch {
+	case cfg.GeoipMirror != "":
+		fetcher = geolite2.FetchFromMirror(cfg.GeoipMirror)
+	case cfg.GeoipMaxmindLicense != "":
+		fetcher = geolite2.FetchFromLicenseKey(cfg.GeoipMaxmindLicense)
 	}
 
-	clientOptions := options.Client().ApplyURI(cfg.MongoURI)
-	client, err := mongodriver.Connect(ctx, clientOptions)
-	if err != nil {
-		log.WithError(err).Fatal("Failed to connect to MongoDB")
-	}
-
-	if err = client.Ping(ctx, nil); err != nil {
-		log.WithError(err).Fatal("Failed to ping MongoDB")
-	}
-
-	log.Info("Connected to MongoDB")
-
-	log.Info("Running database migrations")
-
-	if err := mongo.ApplyMigrations(client.Database(connStr.Database)); err != nil {
-		log.WithError(err).Fatal("Failed to apply mongo migrations")
-	}
-
-	requestClient := requests.NewClient()
-
-	var locator geoip.Locator
-	if cfg.GeoIP {
-		log.Info("GeoIP feature is enable")
-		locator, err = geoip.NewGeoLite2()
+	if fetcher != nil {
+		locator, err := geolite2.NewLocator(ctx, fetcher)
 		if err != nil {
 			log.WithError(err).Fatal("Failed to init GeoIP")
 		}
-	} else {
-		log.Info("GeoIP is disabled")
-		locator = geoip.NewNullGeoLite()
+
+		servicesOptions = append(servicesOptions, services.WithLocator(locator))
+
+		log.Info("GeoIP feature is enable")
 	}
 
-	store := mongo.NewStore(client.Database(connStr.Database), cache)
-	service := services.NewService(store, nil, nil, cache, requestClient, locator)
+	service := services.NewService(store, nil, nil, cache, apiClient, servicesOptions...)
 
-	e := routes.NewRouter(service)
-	e.Use(middleware.Log)
-	e.Use(echoMiddleware.RequestID())
-	e.HTTPErrorHandler = handlers.NewErrors(reporter)
+	routerOptions := []routes.Option{}
 
-	e.Use(func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
-			apicontext := gateway.NewContext(service, c)
+	if cfg.SentryDSN != "" {
+		log.Info("Sentry report is enabled")
 
-			return next(apicontext)
+		reporter, err := startSentry(cfg.SentryDSN)
+		if err != nil {
+			log.WithField("DSN", cfg.SentryDSN).WithError(err).Warn("Failed to start Sentry")
+		} else {
+			log.Info("Sentry client started")
 		}
-	})
 
-	e.Logger.Fatal(e.Start(":8080"))
+		routerOptions = append(routerOptions, routes.WithReporter(reporter))
+	}
+
+	worker := asynq.NewServer(
+		cfg.RedisURI,
+		asynq.BatchConfig(cfg.AsynqGroupMaxSize, cfg.AsynqGroupMaxDelay, int(cfg.AsynqGroupGracePeriod)),
+		asynq.UniquenessTimeout(cfg.AsynqUniquenessTimeout),
+	)
+
+	worker.HandleTask(services.TaskDevicesHeartbeat, service.DevicesHeartbeat(), asynq.BatchTask())
+
+	if err := worker.Start(); err != nil {
+		log.WithError(err).
+			Fatal("failed to start the worker")
+	}
+
+	router := routes.NewRouter(service, routerOptions...)
+
+	go func() {
+		<-ctx.Done()
+
+		log.Debug("Closing HTTP server due context cancellation")
+
+		worker.Shutdown()
+		router.Close()
+	}()
+
+	err = router.Start(":8080") //nolint:errcheck
+	log.WithError(err).Info("HTTP server closed")
 
 	return nil
 }

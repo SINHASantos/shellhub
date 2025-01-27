@@ -7,6 +7,9 @@ export interface IUser {
   token: string;
   user: string;
   username: string;
+  recovery_email: string;
+  currentPassword: string;
+  newPassword: string;
 }
 
 export interface IUserSignUp {
@@ -15,12 +18,15 @@ export interface IUserSignUp {
   password: string;
   username: string;
   emailMarketing?: boolean;
+  sig?: string;
 }
 
-export interface IUSerRecoverPassword {
-  id: string;
-  currentPassword: string;
-  newPassword: string;
+export interface IUserSetup {
+  sign: string;
+  email: string;
+  name: string;
+  password: string;
+  username: string;
 }
 
 export interface IUserUpdatePassword {

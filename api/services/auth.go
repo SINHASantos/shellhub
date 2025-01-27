@@ -10,14 +10,19 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
+	"net"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/cnf/structhash"
-	jwt "github.com/golang-jwt/jwt/v4"
+	"github.com/shellhub-io/shellhub/pkg/api/authorizer"
+	"github.com/shellhub-io/shellhub/pkg/api/jwttoken"
 	"github.com/shellhub-io/shellhub/pkg/api/requests"
 	"github.com/shellhub-io/shellhub/pkg/clock"
 	"github.com/shellhub-io/shellhub/pkg/models"
+	"github.com/shellhub-io/shellhub/pkg/uuid"
+	log "github.com/sirupsen/logrus"
 )
 
 type AuthService interface {
@@ -25,11 +30,38 @@ type AuthService interface {
 	AuthIsCacheToken(ctx context.Context, tenant, id string) (bool, error)
 	AuthUncacheToken(ctx context.Context, tenant, id string) error
 	AuthDevice(ctx context.Context, req requests.DeviceAuth, remoteAddr string) (*models.DeviceAuthResponse, error)
-	AuthUser(ctx context.Context, req requests.UserAuth) (*models.UserAuthResponse, error)
-	AuthGetToken(ctx context.Context, tenant string) (*models.UserAuthResponse, error)
+
+	// AuthLocalUser attempts to authenticate a user with origin [github.com/shellhub-io/shellhub/pkg/models.UserOriginLocal]
+	// using the provided credentials. Users can be blocked from authentications when they makes 3 password mistakes or when
+	// they have MFA enabled (which is a cloud-only feature).
+	//
+	// It will try to use the user's preferred namespace or the first one to which the user was added. As the
+	// authentication key is a JWT, in these cases, the response does not contain the member role to avoid creating
+	// a stateful token. The role must be added in the auth middleware. The TenantID in the response will be empty if the user
+	// is not a member of any namespace or if the user's membership status is pending.
+	//
+	// It returns a timestamp when the block ends if the user is locked out, a token to be used with the OTP code if the MFA
+	// is enabled and an error, if any
+	AuthLocalUser(ctx context.Context, req *requests.AuthLocalUser, sourceIP string) (res *models.UserAuthResponse, lockout int64, mfaToken string, err error)
+	// CreateUserToken is similar to [AuthService.AuthUser] but bypasses credential verification and never blocks.
+	//
+	// It accepts an optional tenant ID to associate the token with a namespace. If the tenant ID is empty, it uses the user's
+	// preferred namespace or the first namespace to which the user was added; if the user's membership status is pending, it
+	// returns an NamespaceNotFound error.
+	//
+	// It returns the created token and an error if any.
+	CreateUserToken(ctx context.Context, req *requests.CreateUserToken) (res *models.UserAuthResponse, err error)
+	// GetUserRole get the user's role. It returns the user's role and an error, if any.
+	GetUserRole(ctx context.Context, tenantID, userID string) (role string, err error)
+	// AuthAPIKey authenticates the given key, returning its API key document. An API key can be used
+	// in place of a JWT token to authenticate requests. The key is only related to a namespace and not to a user,
+	// which means that some routes are blocked from authentication within this method. An API key can be expired,
+	// rendering it invalid. It returns the API key and an error if any.
+	//
+	// The key is cached for 2 minutes after use, so requests made within this period will treat the key as valid.
+	AuthAPIKey(ctx context.Context, key string) (apiKey *models.APIKey, err error)
+
 	AuthPublicKey(ctx context.Context, req requests.PublicKeyAuth) (*models.PublicKeyAuthResponse, error)
-	AuthSwapToken(ctx context.Context, ID, tenant string) (*models.UserAuthResponse, error)
-	AuthUserInfo(ctx context.Context, username, tenant, token string) (*models.UserAuthResponse, error)
 	PublicKey() *rsa.PublicKey
 }
 
@@ -48,17 +80,14 @@ func (s *service) AuthDevice(ctx context.Context, req requests.DeviceAuth, remot
 	}
 
 	uid := sha256.Sum256(structhash.Dump(auth, 1))
-
 	key := hex.EncodeToString(uid[:])
 
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, models.DeviceAuthClaims{
-		UID: key,
-		AuthClaims: models.AuthClaims{
-			Claims: "device",
-		},
-	})
+	claims := authorizer.DeviceClaims{
+		UID:      key,
+		TenantID: req.TenantID,
+	}
 
-	tokenStr, err := token.SignedString(s.privKey)
+	token, err := jwttoken.EncodeDeviceClaims(claims, s.privKey)
 	if err != nil {
 		return nil, NewErrTokenSigned(err)
 	}
@@ -73,7 +102,7 @@ func (s *service) AuthDevice(ctx context.Context, req requests.DeviceAuth, remot
 	if err := s.cache.Get(ctx, strings.Join([]string{"auth_device", key}, "/"), &value); err == nil && value != nil {
 		return &models.DeviceAuthResponse{
 			UID:       key,
-			Token:     tokenStr,
+			Token:     token,
 			Name:      value.Name,
 			Namespace: value.Namespace,
 		}, nil
@@ -88,6 +117,12 @@ func (s *service) AuthDevice(ctx context.Context, req requests.DeviceAuth, remot
 			Platform:   req.Info.Platform,
 		}
 	}
+
+	position, err := s.locator.GetPosition(net.ParseIP(remoteAddr))
+	if err != nil {
+		return nil, err
+	}
+
 	device := models.Device{
 		UID:        key,
 		Identity:   identity,
@@ -96,6 +131,10 @@ func (s *service) AuthDevice(ctx context.Context, req requests.DeviceAuth, remot
 		TenantID:   req.TenantID,
 		LastSeen:   clock.Now(),
 		RemoteAddr: remoteAddr,
+		Position: &models.DevicePosition{
+			Longitude: position.Longitude,
+			Latitude:  position.Latitude,
+		},
 	}
 
 	// The order here is critical as we don't want to register devices if the tenant id is invalid
@@ -108,10 +147,6 @@ func (s *service) AuthDevice(ctx context.Context, req requests.DeviceAuth, remot
 
 	if err := s.store.DeviceCreate(ctx, device, hostname); err != nil {
 		return nil, NewErrDeviceCreate(device, err)
-	}
-
-	if err := s.store.DeviceSetOnline(ctx, models.UID(device.UID), true); err != nil {
-		return nil, NewErrDeviceSetOnline(models.UID(device.UID), err)
 	}
 
 	for _, uid := range req.Sessions {
@@ -130,141 +165,258 @@ func (s *service) AuthDevice(ctx context.Context, req requests.DeviceAuth, remot
 
 	return &models.DeviceAuthResponse{
 		UID:       key,
-		Token:     tokenStr,
+		Token:     token,
 		Name:      dev.Name,
 		Namespace: namespace.Name,
 	}, nil
 }
 
-func (s *service) AuthUser(ctx context.Context, req requests.UserAuth) (*models.UserAuthResponse, error) {
+func (s *service) AuthLocalUser(ctx context.Context, req *requests.AuthLocalUser, sourceIP string) (*models.UserAuthResponse, int64, string, error) {
+	if s, err := s.store.SystemGet(ctx); err != nil || !s.Authentication.Local.Enabled {
+		return nil, 0, "", NewErrAuthMethodNotAllowed(models.UserAuthMethodLocal.String())
+	}
+
+	var err error
 	var user *models.User
 
-	userFromUsername, errUsername := s.store.UserGetByUsername(ctx, strings.ToLower(req.Username))
-	userFromEmail, errEmail := s.store.UserGetByEmail(ctx, strings.ToLower(req.Username))
-
-	switch {
-	case errUsername != nil && errEmail != nil:
-		return nil, NewErrAuthUnathorized(nil)
-	case errUsername == nil:
-		user = userFromUsername
-	case errEmail == nil:
-		user = userFromEmail
+	if req.Identifier.IsEmail() {
+		user, err = s.store.UserGetByEmail(ctx, strings.ToLower(string(req.Identifier)))
+	} else {
+		user, err = s.store.UserGetByUsername(ctx, strings.ToLower(string(req.Identifier)))
 	}
 
-	if !user.Confirmed {
-		return nil, NewErrUserNotConfirmed(nil)
+	if err != nil {
+		return nil, 0, "", NewErrAuthUnathorized(nil)
 	}
 
-	namespace, _ := s.store.NamespaceGetFirst(ctx, user.ID)
-
-	var role string
-	var tenant string
-
-	if namespace != nil {
-		tenant = namespace.TenantID
-
-		for _, member := range namespace.Members {
-			if member.ID == user.ID {
-				role = member.Role
-
-				break
-			}
-		}
+	if !slices.Contains(user.Preferences.AuthMethods, models.UserAuthMethodLocal) {
+		return nil, 0, "", NewErrAuthUnathorized(nil)
 	}
 
-	password := sha256.Sum256([]byte(req.Password))
-	if user.Password == hex.EncodeToString(password[:]) {
-		token := jwt.NewWithClaims(jwt.SigningMethodRS256, models.UserAuthClaims{
-			Username: user.Username,
-			Admin:    true,
-			Tenant:   tenant,
-			Role:     role,
-			ID:       user.ID,
-			AuthClaims: models.AuthClaims{
-				Claims: "user",
-			},
-			RegisteredClaims: jwt.RegisteredClaims{
-				ExpiresAt: jwt.NewNumericDate(clock.Now().Add(time.Hour * 72)),
-			},
-		})
+	switch user.Status {
+	case models.UserStatusInvited:
+		return nil, 0, "", NewErrAuthUnathorized(nil)
+	case models.UserStatusNotConfirmed:
+		return nil, 0, "", NewErrUserNotConfirmed(nil)
+	default:
+		break
+	}
 
-		tokenStr, err := token.SignedString(s.privKey)
+	// Checks whether the user is currently blocked from new login attempts
+	if lockout, attempt, _ := s.cache.HasAccountLockout(ctx, sourceIP, user.ID); lockout > 0 {
+		log.
+			WithFields(log.Fields{
+				"lockout":   lockout,
+				"attempt":   attempt,
+				"source_ip": sourceIP,
+				"user_id":   user.ID,
+			}).
+			Warn("attempt to login blocked")
+
+		return nil, lockout, "", NewErrAuthUnathorized(nil)
+	}
+
+	if !user.Password.Compare(req.Password) {
+		lockout, _, err := s.cache.StoreLoginAttempt(ctx, sourceIP, user.ID)
 		if err != nil {
-			return nil, NewErrTokenSigned(err)
+			log.WithError(err).
+				WithField("source_ip", sourceIP).
+				WithField("user_id", user.ID).
+				Warn("unable to store login attempt")
 		}
 
-		user.LastLogin = clock.Now()
-
-		if err := s.store.UserUpdateData(ctx, user.ID, *user); err != nil {
-			return nil, NewErrUserUpdate(user, err)
-		}
-
-		s.AuthCacheToken(ctx, tenant, user.ID, tokenStr) // nolint: errcheck
-
-		return &models.UserAuthResponse{
-			Token:  tokenStr,
-			Name:   user.Name,
-			ID:     user.ID,
-			User:   user.Username,
-			Tenant: tenant,
-			Role:   role,
-			Email:  user.Email,
-		}, nil
+		return nil, lockout, "", NewErrAuthUnathorized(nil)
 	}
 
-	return nil, NewErrAuthUnathorized(nil)
+	// Reset the attempt and timeout values when succeeds
+	if err := s.cache.ResetLoginAttempts(ctx, sourceIP, user.ID); err != nil {
+		log.WithError(err).
+			WithField("source_ip", sourceIP).
+			WithField("user_id", user.ID).
+			Warn("unable to reset authentication attempts")
+	}
+
+	// Users with MFA enabled must authenticate to the cloud instead of community.
+	if user.MFA.Enabled {
+		mfaToken := uuid.Generate()
+		if err := s.cache.Set(ctx, "mfa-token={"+mfaToken+"}", user.ID, 30*time.Minute); err != nil {
+			log.WithError(err).
+				WithField("source_ip", sourceIP).
+				WithField("user_id", user.ID).
+				Warn("unable to store mfa-token")
+		}
+
+		return nil, 0, mfaToken, nil
+	}
+
+	tenantID := ""
+	role := ""
+	// Populate the tenant and role when the user is associated with a namespace. If the member status is pending, we
+	// ignore the namespace.
+	if ns, _ := s.store.NamespaceGetPreferred(ctx, user.ID); ns != nil && ns.TenantID != "" {
+		if m, _ := ns.FindMember(user.ID); m.Status != models.MemberStatusPending {
+			tenantID = ns.TenantID
+			role = m.Role.String()
+		}
+	}
+
+	claims := authorizer.UserClaims{
+		ID:       user.ID,
+		Origin:   user.Origin.String(),
+		TenantID: tenantID,
+		Username: user.Username,
+		MFA:      user.MFA.Enabled,
+	}
+
+	token, err := jwttoken.EncodeUserClaims(claims, s.privKey)
+	if err != nil {
+		return nil, 0, "", NewErrTokenSigned(err)
+	}
+
+	// Updates last_login and the hash algorithm to bcrypt if still using SHA256
+	changes := &models.UserChanges{LastLogin: clock.Now(), PreferredNamespace: &tenantID}
+	if !strings.HasPrefix(user.Password.Hash, "$") {
+		if neo, _ := models.HashUserPassword(req.Password); neo.Hash != "" {
+			changes.Password = neo.Hash
+		}
+	}
+
+	// TODO: evaluate make this update in a go routine.
+	if err := s.store.UserUpdate(ctx, user.ID, changes); err != nil {
+		return nil, 0, "", NewErrUserUpdate(user, err)
+	}
+
+	if err := s.AuthCacheToken(ctx, tenantID, user.ID, token); err != nil {
+		log.WithError(err).
+			WithFields(log.Fields{"id": user.ID}).
+			Warn("unable to cache the authentication token")
+	}
+
+	res := &models.UserAuthResponse{
+		ID:            user.ID,
+		Origin:        user.Origin.String(),
+		AuthMethods:   user.Preferences.AuthMethods,
+		User:          user.Username,
+		Name:          user.Name,
+		Email:         user.Email,
+		RecoveryEmail: user.RecoveryEmail,
+		MFA:           user.MFA.Enabled,
+		Tenant:        tenantID,
+		Role:          role,
+		Token:         token,
+		MaxNamespaces: user.MaxNamespaces,
+	}
+
+	return res, 0, "", nil
 }
 
-func (s *service) AuthGetToken(ctx context.Context, id string) (*models.UserAuthResponse, error) {
-	user, _, err := s.store.UserGetByID(ctx, id, false)
+func (s *service) CreateUserToken(ctx context.Context, req *requests.CreateUserToken) (*models.UserAuthResponse, error) {
+	user, _, err := s.store.UserGetByID(ctx, req.UserID, false)
 	if err != nil {
-		return nil, NewErrUserNotFound(id, err)
+		return nil, NewErrUserNotFound(req.UserID, err)
 	}
 
-	namespace, _ := s.store.NamespaceGetFirst(ctx, user.ID)
+	tenantID := ""
+	role := ""
 
-	var role string
-	var tenant string
-	if namespace != nil {
-		tenant = namespace.TenantID
+	switch req.TenantID {
+	case "":
+		// A user may not have a preferred namespace. In such cases, we create a token without it.
+		namespace, err := s.store.NamespaceGetPreferred(ctx, user.ID)
+		if err != nil {
+			break
+		}
 
-		for _, member := range namespace.Members {
-			if member.ID == user.ID {
-				role = member.Role
+		member, ok := namespace.FindMember(user.ID)
+		if !ok {
+			return nil, NewErrNamespaceMemberNotFound(user.ID, nil)
+		}
 
-				break
-			}
+		if member.Status != models.MemberStatusPending {
+			tenantID = namespace.TenantID
+			role = member.Role.String()
+		}
+	default:
+		namespace, err := s.store.NamespaceGet(ctx, req.TenantID)
+		if err != nil {
+			return nil, NewErrNamespaceNotFound(req.TenantID, err)
+		}
+
+		member, ok := namespace.FindMember(user.ID)
+		if !ok {
+			return nil, NewErrNamespaceMemberNotFound(user.ID, nil)
+		}
+
+		if member.Status == models.MemberStatusPending {
+			return nil, NewErrNamespaceMemberNotFound(user.ID, nil)
+		}
+
+		tenantID = namespace.TenantID
+		role = member.Role.String()
+
+		if user.Preferences.PreferredNamespace != namespace.TenantID {
+			_ = s.store.UserUpdate(ctx, user.ID, &models.UserChanges{PreferredNamespace: &tenantID})
 		}
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, models.UserAuthClaims{
-		Username: user.Username,
-		Admin:    true,
-		Tenant:   tenant,
-		Role:     role,
+	claims := authorizer.UserClaims{
 		ID:       user.ID,
-		AuthClaims: models.AuthClaims{
-			Claims: "user",
-		},
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(clock.Now().Add(time.Hour * 72)),
-		},
-	})
+		Origin:   user.Origin.String(),
+		TenantID: tenantID,
+		Username: user.Username,
+		MFA:      user.MFA.Enabled,
+	}
 
-	tokenStr, err := token.SignedString(s.privKey)
+	token, err := jwttoken.EncodeUserClaims(claims, s.privKey)
 	if err != nil {
 		return nil, NewErrTokenSigned(err)
 	}
 
+	if err := s.AuthCacheToken(ctx, tenantID, user.ID, token); err != nil {
+		log.WithError(err).Warn("unable to cache the user's auth token")
+	}
+
 	return &models.UserAuthResponse{
-		Token:  tokenStr,
-		Name:   user.Name,
-		ID:     user.ID,
-		User:   user.Username,
-		Tenant: tenant,
-		Role:   role,
-		Email:  user.Email,
+		ID:            user.ID,
+		Origin:        user.Origin.String(),
+		AuthMethods:   user.Preferences.AuthMethods,
+		User:          user.Username,
+		Name:          user.Name,
+		Email:         user.Email,
+		RecoveryEmail: user.RecoveryEmail,
+		MFA:           user.MFA.Enabled,
+		Tenant:        tenantID,
+		Role:          role,
+		Token:         token,
+		MaxNamespaces: user.MaxNamespaces,
 	}, nil
+}
+
+func (s *service) AuthAPIKey(ctx context.Context, key string) (*models.APIKey, error) {
+	apiKey := new(models.APIKey)
+	if err := s.cache.Get(ctx, "api-key={"+key+"}", apiKey); err != nil {
+		return nil, err
+	}
+
+	if apiKey.ID == "" {
+		keySum := sha256.Sum256([]byte(key))
+		hashedKey := hex.EncodeToString(keySum[:])
+
+		var err error
+		if apiKey, err = s.store.APIKeyGet(ctx, hashedKey); err != nil {
+			return nil, NewErrAPIKeyNotFound("", err)
+		}
+	}
+
+	if !apiKey.IsValid() {
+		return nil, NewErrAPIKeyInvalid(apiKey.Name)
+	}
+
+	if err := s.cache.Set(ctx, "api-key={"+key+"}", apiKey, 2*time.Minute); err != nil {
+		log.WithError(err).Info("Unable to set the api-key in cache")
+	}
+
+	return apiKey, nil
 }
 
 func (s *service) AuthPublicKey(ctx context.Context, req requests.PublicKeyAuth) (*models.PublicKeyAuthResponse, error) {
@@ -294,94 +446,18 @@ func (s *service) AuthPublicKey(ctx context.Context, req requests.PublicKeyAuth)
 	}, nil
 }
 
-func (s *service) AuthSwapToken(ctx context.Context, id, tenant string) (*models.UserAuthResponse, error) {
-	namespace, err := s.store.NamespaceGet(ctx, tenant)
+func (s *service) GetUserRole(ctx context.Context, tenantID, userID string) (string, error) {
+	ns, err := s.store.NamespaceGet(ctx, tenantID)
 	if err != nil {
-		return nil, NewErrNamespaceNotFound(tenant, err)
+		return "", err
 	}
 
-	user, _, err := s.store.UserGetByID(ctx, id, false)
-	if err != nil {
-		return nil, NewErrUserNotFound(id, err)
+	member, ok := ns.FindMember(userID)
+	if !ok {
+		return "", NewErrNamespaceMemberNotFound(userID, nil)
 	}
 
-	var role string
-	for _, member := range namespace.Members {
-		if member.ID == user.ID {
-			role = member.Role
-
-			break
-		}
-	}
-
-	for _, member := range namespace.Members {
-		if user.ID == member.ID {
-			token := jwt.NewWithClaims(jwt.SigningMethodRS256, models.UserAuthClaims{
-				Username: user.Username,
-				Admin:    true,
-				Tenant:   namespace.TenantID,
-				Role:     role,
-				ID:       user.ID,
-				AuthClaims: models.AuthClaims{
-					Claims: "user",
-				},
-				RegisteredClaims: jwt.RegisteredClaims{
-					ExpiresAt: jwt.NewNumericDate(clock.Now().Add(time.Hour * 72)),
-				},
-			})
-
-			tokenStr, err := token.SignedString(s.privKey)
-			if err != nil {
-				return nil, NewErrTokenSigned(err)
-			}
-
-			s.AuthCacheToken(ctx, tenant, user.ID, tokenStr) // nolint: errcheck
-
-			return &models.UserAuthResponse{
-				Token:  tokenStr,
-				Name:   user.Name,
-				ID:     user.ID,
-				User:   user.Username,
-				Role:   role,
-				Tenant: namespace.TenantID,
-				Email:  user.Email,
-			}, nil
-		}
-	}
-
-	return nil, nil
-}
-
-func (s *service) AuthUserInfo(ctx context.Context, username, tenant, token string) (*models.UserAuthResponse, error) {
-	user, err := s.store.UserGetByUsername(ctx, username)
-	if err != nil || user == nil {
-		return nil, NewErrUserNotFound(username, err)
-	}
-
-	namespace, _ := s.store.NamespaceGet(ctx, tenant)
-
-	var role string
-	if namespace != nil {
-		for _, member := range namespace.Members {
-			if member.ID == user.ID {
-				role = member.Role
-
-				break
-			}
-		}
-	}
-
-	token = strings.Replace(token, "Bearer ", "", 1)
-
-	return &models.UserAuthResponse{
-		Token:  token,
-		Name:   user.Name,
-		User:   user.Username,
-		Tenant: tenant,
-		Role:   role,
-		ID:     user.ID,
-		Email:  user.Email,
-	}, nil
+	return member.Role.String(), nil
 }
 
 func (s *service) PublicKey() *rsa.PublicKey {

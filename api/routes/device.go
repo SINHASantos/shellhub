@@ -1,14 +1,11 @@
 package routes
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"net/http"
 	"strconv"
 
 	"github.com/shellhub-io/shellhub/api/pkg/gateway"
-	"github.com/shellhub-io/shellhub/api/pkg/guard"
-	"github.com/shellhub-io/shellhub/pkg/api/paginator"
+	"github.com/shellhub-io/shellhub/pkg/api/query"
 	"github.com/shellhub-io/shellhub/pkg/api/requests"
 	"github.com/shellhub-io/shellhub/pkg/models"
 )
@@ -20,7 +17,6 @@ const (
 	DeleteDeviceURL             = "/devices/:uid"
 	RenameDeviceURL             = "/devices/:uid"
 	OfflineDeviceURL            = "/devices/:uid/offline"
-	HeartbeatDeviceURL          = "/devices/:uid/heartbeat"
 	LookupDeviceURL             = "/lookup"
 	UpdateDeviceStatusURL       = "/devices/:uid/:status"
 	CreateTagURL                = "/devices/:uid/tags"      // Add a tag to a device.
@@ -35,45 +31,72 @@ const (
 	ParamTagName      = "name"
 )
 
-type filterQuery struct {
-	Filter  string              `query:"filter"`
-	Status  models.DeviceStatus `query:"status"`
-	SortBy  string              `query:"sort_by"`
-	OrderBy string              `query:"order_by"`
-	paginator.Query
-}
-
 func (h *Handler) GetDeviceList(c gateway.Context) error {
-	query := filterQuery{}
-	if err := c.Bind(&query); err != nil {
+	req := new(requests.DeviceList)
+
+	if err := c.Bind(req); err != nil {
 		return err
 	}
 
-	query.Normalize()
+	req.Paginator.Normalize()
+	req.Sorter.Normalize()
 
-	raw, err := base64.StdEncoding.DecodeString(query.Filter)
-	if err != nil {
+	if err := req.Filters.Unmarshal(); err != nil {
 		return err
 	}
 
-	var filter []models.Filter
-	if err := json.Unmarshal(raw, &filter); len(raw) > 0 && err != nil {
+	if c.QueryParam("connector") != "" {
+		filter := []query.Filter{
+			{
+				Type: query.FilterTypeProperty,
+				Params: &query.FilterProperty{
+					Name:     "info.platform",
+					Operator: "eq",
+					Value:    "connector",
+				},
+			},
+			{
+				Type: query.FilterTypeOperator,
+				Params: &query.FilterOperator{
+					Name: "and",
+				},
+			},
+		}
+
+		req.Filters.Data = append(req.Filters.Data, filter...)
+	} else {
+		filter := []query.Filter{
+			{
+				Type: query.FilterTypeProperty,
+				Params: &query.FilterProperty{
+					Name:     "info.platform",
+					Operator: "ne",
+					Value:    "connector",
+				},
+			},
+			{
+				Type: query.FilterTypeOperator,
+				Params: &query.FilterOperator{
+					Name: "and",
+				},
+			},
+		}
+
+		req.Filters.Data = append(req.Filters.Data, filter...)
+	}
+
+	if err := c.Validate(req); err != nil {
 		return err
 	}
 
-	var tenant string
-	if c.Tenant() != nil {
-		tenant = c.Tenant().ID
-	}
-
-	devices, count, err := h.service.ListDevices(c.Ctx(), tenant, query.Query, filter, query.Status, query.SortBy, query.OrderBy)
-	if err != nil {
-		return err
-	}
-
+	res, count, err := h.service.ListDevices(c.Ctx(), req)
 	c.Response().Header().Set("X-Total-Count", strconv.Itoa(count))
 
-	return c.JSON(http.StatusOK, devices)
+	if err != nil {
+		return err
+	}
+
+	return c.JSON(http.StatusOK, res)
 }
 
 func (h *Handler) GetDevice(c gateway.Context) error {
@@ -127,12 +150,7 @@ func (h *Handler) DeleteDevice(c gateway.Context) error {
 		tenant = c.Tenant().ID
 	}
 
-	err := guard.EvaluatePermission(c.Role(), guard.Actions.Device.Remove, func() error {
-		err := h.service.DeleteDevice(c.Ctx(), models.UID(req.UID), tenant)
-
-		return err
-	})
-	if err != nil {
+	if err := h.service.DeleteDevice(c.Ctx(), models.UID(req.UID), tenant); err != nil {
 		return err
 	}
 
@@ -154,12 +172,7 @@ func (h *Handler) RenameDevice(c gateway.Context) error {
 		tenant = c.Tenant().ID
 	}
 
-	err := guard.EvaluatePermission(c.Role(), guard.Actions.Device.Rename, func() error {
-		err := h.service.RenameDevice(c.Ctx(), models.UID(req.UID), req.Name, tenant)
-
-		return err
-	})
-	if err != nil {
+	if err := h.service.RenameDevice(c.Ctx(), models.UID(req.UID), req.Name, tenant); err != nil {
 		return err
 	}
 
@@ -176,7 +189,7 @@ func (h *Handler) OfflineDevice(c gateway.Context) error {
 		return err
 	}
 
-	if err := h.service.OffineDevice(c.Ctx(), models.UID(req.UID), false); err != nil {
+	if err := h.service.OfflineDevice(c.Ctx(), models.UID(req.UID)); err != nil {
 		return err
 	}
 
@@ -222,29 +235,12 @@ func (h *Handler) UpdateDeviceStatus(c gateway.Context) error {
 		"pending": models.DeviceStatusPending,
 		"unused":  models.DeviceStatusUnused,
 	}
-	err := guard.EvaluatePermission(c.Role(), guard.Actions.Device.Accept, func() error {
-		err := h.service.UpdateDeviceStatus(c.Ctx(), tenant, models.UID(req.UID), status[req.Status])
 
-		return err
-	})
-	if err != nil {
+	if err := h.service.UpdateDeviceStatus(c.Ctx(), tenant, models.UID(req.UID), status[req.Status]); err != nil {
 		return err
 	}
 
 	return c.NoContent(http.StatusOK)
-}
-
-func (h *Handler) HeartbeatDevice(c gateway.Context) error {
-	var req requests.DeviceHeartbeat
-	if err := c.Bind(&req); err != nil {
-		return err
-	}
-
-	if err := c.Validate(&req); err != nil {
-		return err
-	}
-
-	return h.service.DeviceHeartbeat(c.Ctx(), models.UID(req.UID))
 }
 
 func (h *Handler) CreateDeviceTag(c gateway.Context) error {
@@ -257,10 +253,7 @@ func (h *Handler) CreateDeviceTag(c gateway.Context) error {
 		return err
 	}
 
-	err := guard.EvaluatePermission(c.Role(), guard.Actions.Device.CreateTag, func() error {
-		return h.service.CreateDeviceTag(c.Ctx(), models.UID(req.UID), req.Tag)
-	})
-	if err != nil {
+	if err := h.service.CreateDeviceTag(c.Ctx(), models.UID(req.UID), req.Tag); err != nil {
 		return err
 	}
 
@@ -277,10 +270,7 @@ func (h *Handler) RemoveDeviceTag(c gateway.Context) error {
 		return err
 	}
 
-	err := guard.EvaluatePermission(c.Role(), guard.Actions.Device.RemoveTag, func() error {
-		return h.service.RemoveDeviceTag(c.Ctx(), models.UID(req.UID), req.Tag)
-	})
-	if err != nil {
+	if err := h.service.RemoveDeviceTag(c.Ctx(), models.UID(req.UID), req.Tag); err != nil {
 		return err
 	}
 
@@ -297,10 +287,7 @@ func (h *Handler) UpdateDeviceTag(c gateway.Context) error {
 		return err
 	}
 
-	err := guard.EvaluatePermission(c.Role(), guard.Actions.Device.UpdateTag, func() error {
-		return h.service.UpdateDeviceTag(c.Ctx(), models.UID(req.UID), req.Tags)
-	})
-	if err != nil {
+	if err := h.service.UpdateDeviceTag(c.Ctx(), models.UID(req.UID), req.Tags); err != nil {
 		return err
 	}
 
@@ -322,9 +309,7 @@ func (h *Handler) UpdateDevice(c gateway.Context) error {
 		tenant = c.Tenant().ID
 	}
 
-	if err := guard.EvaluatePermission(c.Role(), guard.Actions.Device.Update, func() error {
-		return h.service.UpdateDevice(c.Ctx(), tenant, models.UID(req.UID), req.Name, req.PublicURL)
-	}); err != nil {
+	if err := h.service.UpdateDevice(c.Ctx(), tenant, models.UID(req.UID), req.Name, req.PublicURL); err != nil {
 		return err
 	}
 

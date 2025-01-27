@@ -1,9 +1,12 @@
 output:
-  format: colored-line-number
+  formats:
+    - format: colored-line-number
   print-issued-lines: true
   print-linter-name: true
-  uniq-by-line: true
   sort-results: true
+
+issues:
+  uniq-by-line: true
 
 linters:
   disable-all: true
@@ -13,7 +16,7 @@ linters:
     - gosimple
     - govet
     - ineffassign
-    - exportloopref
+    - copyloopvar
     - staticcheck
     - unconvert
     - unused
@@ -26,6 +29,7 @@ linters:
     - stylecheck
     - nlreturn
     - nilerr
+    - gosec
 
 linters-settings:
   staticcheck:
@@ -36,7 +40,7 @@ linters-settings:
         deny:
           - pkg: io/ioutil
             desc: 'io/ioutil package has been deprecated'
-          - pkg: github.com/satori/go.uuid
+          - pkg: github.com/google/uuid
             desc: "Uuid generation is only allowed using 'github.com/shellhub-io/shellhub/pkg/uuid'"
           - pkg: github.com/dgrijalva/jwt-go
             desc: "dgrijalva/jwt-go is deprecated please use 'github.com/golang-jwt/jwt'"

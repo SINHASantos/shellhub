@@ -10,6 +10,7 @@ import (
 	"github.com/shellhub-io/shellhub/pkg/errors"
 	mocksGeoIp "github.com/shellhub-io/shellhub/pkg/geoip/mocks"
 	"github.com/shellhub-io/shellhub/pkg/models"
+	"github.com/shellhub-io/shellhub/pkg/validator"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -87,7 +88,7 @@ func TestGetTags(t *testing.T) {
 			tc.requiredMocks()
 
 			locator := &mocksGeoIp.Locator{}
-			service := NewService(store.Store(mock), privateKey, publicKey, storecache.NewNullCache(), clientMock, locator)
+			service := NewService(store.Store(mock), privateKey, publicKey, storecache.NewNullCache(), clientMock, WithLocator(locator))
 
 			tags, count, err := service.GetTags(ctx, tc.tenantID)
 			assert.Equal(t, tc.expected, Expected{tags, count, err})
@@ -116,7 +117,7 @@ func TestRenameTag(t *testing.T) {
 			currentTag:    "currentTag",
 			newTag:        "invalid_tag",
 			requiredMocks: func() {},
-			expected:      NewErrTagInvalid("invalid_tag", nil),
+			expected:      NewErrTagInvalid("invalid_tag", validator.ErrStructureInvalid),
 		},
 		{
 			name:       "fail when device has no tags",
@@ -194,9 +195,9 @@ func TestRenameTag(t *testing.T) {
 				}
 
 				mock.On("TagsGet", ctx, namespace.TenantID).Return(deviceWithTags.Tags, len(deviceWithTags.Tags), nil).Once()
-				mock.On("TagRename", ctx, namespace.TenantID, "device3", "device1").Return(nil).Once()
+				mock.On("TagsRename", ctx, namespace.TenantID, "device3", "device1").Return(int64(0), errors.New("error", "", 0)).Once()
 			},
-			expected: nil,
+			expected: errors.New("error", "", 0),
 		},
 		{
 			name:       "success to rename the tag",
@@ -218,7 +219,7 @@ func TestRenameTag(t *testing.T) {
 				}
 
 				mock.On("TagsGet", ctx, namespace.TenantID).Return(deviceWithTags.Tags, len(deviceWithTags.Tags), nil).Once()
-				mock.On("TagRename", ctx, namespace.TenantID, "device3", "device1").Return(nil).Once()
+				mock.On("TagsRename", ctx, namespace.TenantID, "device3", "device1").Return(int64(1), nil).Once()
 			},
 			expected: nil,
 		},
@@ -229,7 +230,7 @@ func TestRenameTag(t *testing.T) {
 			tc.requiredMocks()
 
 			locator := &mocksGeoIp.Locator{}
-			service := NewService(store.Store(mock), privateKey, publicKey, storecache.NewNullCache(), clientMock, locator)
+			service := NewService(store.Store(mock), privateKey, publicKey, storecache.NewNullCache(), clientMock, WithLocator(locator))
 
 			err := service.RenameTag(ctx, tc.tenantID, tc.currentTag, tc.newTag)
 			assert.Equal(t, tc.expected, err)
@@ -257,7 +258,7 @@ func TestDeleteTag(t *testing.T) {
 			tenant: "tenant",
 			requiredMocks: func() {
 			},
-			expected: NewErrTagInvalid("invalid_tag", nil),
+			expected: NewErrTagInvalid("invalid_tag", validator.ErrStructureInvalid),
 		},
 		{
 			name:   "fail when could not find the namespace",
@@ -315,7 +316,7 @@ func TestDeleteTag(t *testing.T) {
 
 				mock.On("NamespaceGet", ctx, "tenant").Return(namespace, nil).Once()
 				mock.On("TagsGet", ctx, "tenant").Return(device.Tags, len(device.Tags), nil).Once()
-				mock.On("TagDelete", ctx, "tenant", "device1").Return(errors.New("error", "", 0)).Once()
+				mock.On("TagsDelete", ctx, "tenant", "device1").Return(int64(0), errors.New("error", "", 0)).Once()
 			},
 			expected: errors.New("error", "", 0),
 		},
@@ -335,7 +336,7 @@ func TestDeleteTag(t *testing.T) {
 
 				mock.On("NamespaceGet", ctx, "tenant").Return(namespace, nil).Once()
 				mock.On("TagsGet", ctx, "tenant").Return(device.Tags, len(device.Tags), nil).Once()
-				mock.On("TagDelete", ctx, "tenant", "device1").Return(nil).Once()
+				mock.On("TagsDelete", ctx, "tenant", "device1").Return(int64(1), nil).Once()
 			},
 			expected: nil,
 		},
@@ -346,7 +347,7 @@ func TestDeleteTag(t *testing.T) {
 			tc.requiredMocks()
 
 			locator := &mocksGeoIp.Locator{}
-			service := NewService(store.Store(mock), privateKey, publicKey, storecache.NewNullCache(), clientMock, locator)
+			service := NewService(store.Store(mock), privateKey, publicKey, storecache.NewNullCache(), clientMock, WithLocator(locator))
 
 			err := service.DeleteTag(ctx, tc.tenant, tc.tag)
 			assert.Equal(t, tc.expected, err)

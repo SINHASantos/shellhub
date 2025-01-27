@@ -9,7 +9,7 @@ import (
 
 	"github.com/shellhub-io/shellhub/api/store"
 	"github.com/shellhub-io/shellhub/api/store/mocks"
-	"github.com/shellhub-io/shellhub/pkg/api/paginator"
+	"github.com/shellhub-io/shellhub/pkg/api/query"
 	"github.com/shellhub-io/shellhub/pkg/api/requests"
 	storecache "github.com/shellhub-io/shellhub/pkg/cache"
 	"github.com/shellhub-io/shellhub/pkg/geoip"
@@ -30,16 +30,16 @@ func TestListSessions(t *testing.T) {
 	}
 
 	cases := []struct {
-		name          string
-		pagination    paginator.Query
-		requiredMocks func(query paginator.Query)
+		description   string
+		paginator     query.Paginator
+		requiredMocks func(paginator query.Paginator)
 		expected      Expected
 	}{
 		{
-			name:       "fails",
-			pagination: paginator.Query{Page: 1, PerPage: 10},
-			requiredMocks: func(query paginator.Query) {
-				mock.On("SessionList", ctx, query).
+			description: "fails",
+			paginator:   query.Paginator{Page: 1, PerPage: 10},
+			requiredMocks: func(paginator query.Paginator) {
+				mock.On("SessionList", ctx, paginator).
 					Return(nil, 0, goerrors.New("error")).Once()
 			},
 			expected: Expected{
@@ -49,15 +49,15 @@ func TestListSessions(t *testing.T) {
 			},
 		},
 		{
-			name:       "succeeds",
-			pagination: paginator.Query{Page: 1, PerPage: 10},
-			requiredMocks: func(query paginator.Query) {
+			description: "succeeds",
+			paginator:   query.Paginator{Page: 1, PerPage: 10},
+			requiredMocks: func(paginator query.Paginator) {
 				sessions := []models.Session{
 					{UID: "uid1"},
 					{UID: "uid2"},
 					{UID: "uid3"},
 				}
-				mock.On("SessionList", ctx, query).
+				mock.On("SessionList", ctx, paginator).
 					Return(sessions, len(sessions), nil).Once()
 			},
 			expected: Expected{
@@ -77,11 +77,11 @@ func TestListSessions(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			tc.requiredMocks(tc.pagination)
+		t.Run(tc.description, func(t *testing.T) {
+			tc.requiredMocks(tc.paginator)
 
-			service := NewService(store.Store(mock), privateKey, publicKey, storecache.NewNullCache(), clientMock, nil)
-			returnedSessions, count, err := service.ListSessions(ctx, tc.pagination)
+			service := NewService(store.Store(mock), privateKey, publicKey, storecache.NewNullCache(), clientMock)
+			returnedSessions, count, err := service.ListSessions(ctx, tc.paginator)
 			assert.Equal(t, tc.expected, Expected{returnedSessions, count, err})
 		})
 	}
@@ -138,7 +138,7 @@ func TestGetSession(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.requiredMocks()
 
-			service := NewService(store.Store(mock), privateKey, publicKey, storecache.NewNullCache(), clientMock, nil)
+			service := NewService(store.Store(mock), privateKey, publicKey, storecache.NewNullCache(), clientMock)
 			returnedSession, err := service.GetSession(ctx, tc.uid)
 			assert.Equal(t, tc.expected, Expected{returnedSession, err})
 		})
@@ -207,7 +207,7 @@ func TestCreateSession(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.requiredMocks()
 
-			service := NewService(store.Store(mock), privateKey, publicKey, storecache.NewNullCache(), clientMock, locator)
+			service := NewService(store.Store(mock), privateKey, publicKey, storecache.NewNullCache(), clientMock, WithLocator(locator))
 			returnedSession, err := service.CreateSession(ctx, tc.session)
 			assert.Equal(t, tc.expected, Expected{returnedSession, err})
 		})
@@ -260,7 +260,7 @@ func TestDeactivateSession(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.requiredMocks()
 
-			service := NewService(store.Store(mock), privateKey, publicKey, storecache.NewNullCache(), clientMock, nil)
+			service := NewService(store.Store(mock), privateKey, publicKey, storecache.NewNullCache(), clientMock)
 			err := service.DeactivateSession(ctx, tc.uid)
 			assert.Equal(t, tc.expected, err)
 		})
@@ -269,32 +269,82 @@ func TestDeactivateSession(t *testing.T) {
 	mock.AssertExpectations(t)
 }
 
-func TestSetSessionAuthenticated(t *testing.T) {
+func TestUpdateSession(t *testing.T) {
 	mock := new(mocks.Store)
 
 	ctx := context.TODO()
 
+	theTrue := true
+
 	cases := []struct {
 		name          string
 		uid           models.UID
+		model         models.SessionUpdate
 		requiredMocks func()
 		expected      error
 	}{
 		{
-			name: "fails",
-			uid:  models.UID("_uid"),
+			name:  "fails when cannot get the session",
+			uid:   models.UID("_uid"),
+			model: models.SessionUpdate{},
 			requiredMocks: func() {
-				mock.On("SessionSetAuthenticated", ctx, models.UID("_uid"), true).
-					Return(goerrors.New("error")).Once()
+				mock.On("SessionGet", ctx, models.UID("_uid")).Return(nil, goerrors.New("error")).Once()
+			},
+			expected: NewErrSessionNotFound(models.UID("_uid"), goerrors.New("error")),
+		},
+		{
+			name:  "fails to update the session",
+			uid:   models.UID("_uid"),
+			model: models.SessionUpdate{},
+			requiredMocks: func() {
+				sess := &models.Session{}
+
+				mock.On("SessionGet", ctx, models.UID("_uid")).Return(sess, nil).Once()
+
+				mock.On("SessionUpdate", ctx, models.UID("_uid"), sess).Return(goerrors.New("error")).Once()
 			},
 			expected: goerrors.New("error"),
 		},
 		{
-			name: "succeeds",
-			uid:  models.UID("uid"),
+			name:  "success to update the session",
+			uid:   models.UID("_uid"),
+			model: models.SessionUpdate{},
 			requiredMocks: func() {
-				mock.On("SessionSetAuthenticated", ctx, models.UID("uid"), true).
-					Return(nil).Once()
+				sess := &models.Session{}
+
+				mock.On("SessionGet", ctx, models.UID("_uid")).Return(sess, nil).Once()
+
+				mock.On("SessionUpdate", ctx, models.UID("_uid"), sess).Return(nil).Once()
+			},
+			expected: nil,
+		},
+		{
+			name: "fails to update the session when authenticated field is updated",
+			uid:  models.UID("_uid"),
+			model: models.SessionUpdate{
+				Authenticated: &theTrue,
+			},
+			requiredMocks: func() {
+				sess := &models.Session{}
+
+				mock.On("SessionGet", ctx, models.UID("_uid")).Return(sess, nil).Once()
+				mock.On("SessionUpdate", ctx, models.UID("_uid"), sess).Return(nil).Once()
+				mock.On("SessionActiveCreate", ctx, models.UID("_uid"), sess).Return(goerrors.New("error")).Once()
+			},
+			expected: goerrors.New("error"),
+		},
+		{
+			name: "success to update the session when authenticated field is updated",
+			uid:  models.UID("_uid"),
+			model: models.SessionUpdate{
+				Authenticated: &theTrue,
+			},
+			requiredMocks: func() {
+				sess := &models.Session{}
+
+				mock.On("SessionGet", ctx, models.UID("_uid")).Return(sess, nil).Once()
+				mock.On("SessionUpdate", ctx, models.UID("_uid"), sess).Return(nil).Once()
+				mock.On("SessionActiveCreate", ctx, models.UID("_uid"), sess).Return(nil).Once()
 			},
 			expected: nil,
 		},
@@ -304,8 +354,8 @@ func TestSetSessionAuthenticated(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.requiredMocks()
 
-			service := NewService(store.Store(mock), privateKey, publicKey, storecache.NewNullCache(), clientMock, nil)
-			err := service.SetSessionAuthenticated(ctx, tc.uid, true)
+			service := NewService(store.Store(mock), privateKey, publicKey, storecache.NewNullCache(), clientMock)
+			err := service.UpdateSession(ctx, tc.uid, tc.model)
 			assert.Equal(t, tc.expected, err)
 		})
 	}

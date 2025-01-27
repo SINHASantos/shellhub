@@ -1,0 +1,28 @@
+#!/bin/sh
+
+. "$(dirname "$0")/utils"
+
+echo "🌟 Welcome to the ShellHub Setup Script"
+echo ""
+
+exit_if_not_running
+
+if curl -s http://localhost/info | grep -q '"setup":true'; then
+  echo "✅ Setup has already been completed. No further action is required."
+  exit 0
+fi
+
+echo "📋 This script will generate a valid URL to set up your ShellHub instance."
+echo "❗ Important: The ShellHub instance cannot be on localhost. Please ensure you provide a valid public IP address or hostname."
+echo ""
+
+KEY="api_private_key"
+
+SIGNATURE=$(echo -n "shellhub" | openssl dgst -sha256 -sign "$KEY" | sha256sum | cut -d' ' -f1)
+URL="http://localhost/setup?sign=$(printf '%s' "$SIGNATURE")"
+
+echo "🔗 Generated Setup URL:"
+echo "$URL"
+echo ""
+echo "🚀 You can use this URL to complete the setup of your ShellHub instance."
+echo "✅ Please ensure your ShellHub server is running and accessible from an external address."

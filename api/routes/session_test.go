@@ -13,9 +13,9 @@ import (
 
 	"github.com/shellhub-io/shellhub/api/store"
 
-	"github.com/shellhub-io/shellhub/api/pkg/guard"
 	"github.com/shellhub-io/shellhub/api/services/mocks"
-	"github.com/shellhub-io/shellhub/pkg/api/paginator"
+	"github.com/shellhub-io/shellhub/pkg/api/authorizer"
+	"github.com/shellhub-io/shellhub/pkg/api/query"
 	"github.com/shellhub-io/shellhub/pkg/api/requests"
 	"github.com/shellhub-io/shellhub/pkg/models"
 	"github.com/stretchr/testify/assert"
@@ -30,19 +30,19 @@ func TestGetSessionList(t *testing.T) {
 		expectedStatus  int
 	}
 	cases := []struct {
-		title         string
-		payload       paginator.Query
-		requiredMocks func(payload *paginator.Query)
+		description   string
+		paginator     query.Paginator
+		requiredMocks func(paginator query.Paginator)
 		expected      Expected
 	}{
 		{
-			title: "fails when try to searching a session list of a existing session",
-			payload: paginator.Query{
+			description: "fails when try to searching a session list of a existing session",
+			paginator: query.Paginator{
 				Page:    1,
 				PerPage: 10,
 			},
-			requiredMocks: func(payload *paginator.Query) {
-				mock.On("ListSessions", gomock.Anything, *payload).Return(nil, 0, svc.ErrNotFound).Once()
+			requiredMocks: func(paginator query.Paginator) {
+				mock.On("ListSessions", gomock.Anything, paginator).Return(nil, 0, svc.ErrNotFound).Once()
 			},
 			expected: Expected{
 				expectedSession: nil,
@@ -50,14 +50,14 @@ func TestGetSessionList(t *testing.T) {
 			},
 		},
 		{
-			title: "success when try to searching a session list of a existing session",
-			payload: paginator.Query{
+			description: "success when try to searching a session list of a existing session",
+			paginator: query.Paginator{
 				Page:    1,
 				PerPage: 10,
 			},
-			requiredMocks: func(payload *paginator.Query) {
+			requiredMocks: func(paginator query.Paginator) {
 				ss := []models.Session{}
-				mock.On("ListSessions", gomock.Anything, *payload).Return(ss, 1, nil).Once()
+				mock.On("ListSessions", gomock.Anything, paginator).Return(ss, 1, nil).Once()
 			},
 			expected: Expected{
 				expectedSession: []models.Session{},
@@ -67,17 +67,17 @@ func TestGetSessionList(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		t.Run(tc.title, func(t *testing.T) {
-			tc.requiredMocks(&tc.payload)
+		t.Run(tc.description, func(t *testing.T) {
+			tc.requiredMocks(tc.paginator)
 
-			jsonData, err := json.Marshal(tc.payload)
+			jsonData, err := json.Marshal(tc.paginator)
 			if err != nil {
 				assert.NoError(t, err)
 			}
 
 			req := httptest.NewRequest(http.MethodGet, "/api/sessions", strings.NewReader(string(jsonData)))
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Role", guard.RoleOwner)
+			req.Header.Set("X-Role", authorizer.RoleOwner.String())
 			rec := httptest.NewRecorder()
 
 			e := NewRouter(mock)
@@ -148,7 +148,7 @@ func TestGetSession(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/sessions/%s", tc.uid), nil)
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Role", guard.RoleOwner)
+			req.Header.Set("X-Role", authorizer.RoleOwner.String())
 			rec := httptest.NewRecorder()
 
 			e := NewRouter(mock)
@@ -248,7 +248,7 @@ func TestCreateSession(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodPost, "/internal/sessions", strings.NewReader(string(jsonData)))
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Role", guard.RoleOwner)
+			req.Header.Set("X-Role", authorizer.RoleOwner.String())
 			rec := httptest.NewRecorder()
 
 			e := NewRouter(mock)
@@ -300,7 +300,7 @@ func TestFinishSession(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/internal/sessions/%s/finish", tc.uid), nil)
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Role", guard.RoleOwner)
+			req.Header.Set("X-Role", authorizer.RoleOwner.String())
 			rec := httptest.NewRecorder()
 
 			e := NewRouter(mock)

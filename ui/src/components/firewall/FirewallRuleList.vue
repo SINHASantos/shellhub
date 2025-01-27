@@ -18,7 +18,7 @@
       <template v-slot:rows>
         <tr v-for="(item, i) in firewallRules" :key="i">
           <td class="text-center">
-            <v-icon v-if="item.active" color="success">
+            <v-icon v-if="item.active" data-test="firewall-rules-active" color="success">
               mdi-check-circle
             </v-icon>
             <v-tooltip location="bottom" v-else>
@@ -29,21 +29,21 @@
             </v-tooltip>
           </td>
 
-          <td class="text-center">{{ item.priority }}</td>
+          <td class="text-center" data-test="firewall-rules-priority">{{ item.priority }}</td>
 
-          <td class="text-center">
+          <td class="text-center" data-test="firewall-rules-action">
             {{ capitalizeText(item.action) }}
           </td>
 
-          <td class="text-center">
+          <td class="text-center" data-test="firewall-rules-source-ip">
             {{ formatSourceIP(item.source_ip) }}
           </td>
 
-          <td class="text-center">
+          <td class="text-center" data-test="firewall-rules-username">
             {{ formatUsername(item.username) }}
           </td>
 
-          <td class="text-center">
+          <td class="text-center" data-test="firewall-rules-filter">
             <div v-if="isHostname(item.filter)">
               {{ formatHostnameFilter(item.filter) }}
             </div>
@@ -75,9 +75,15 @@
           <td class="text-center">
             <v-menu location="bottom" scrim eager>
               <template v-slot:activator="{ props }">
-                <v-chip v-bind="props" density="comfortable" size="small">
-                  <v-icon>mdi-dots-horizontal</v-icon>
-                </v-chip>
+                <v-btn
+                  v-bind="props"
+                  variant="plain"
+                  class="border rounded bg-v-theme-background"
+                  density="comfortable"
+                  size="default"
+                  icon="mdi-format-list-bulleted"
+                  data-test="firewall-rules-actions"
+                />
               </template>
               <v-list class="bg-v-theme-surface" lines="two" density="compact">
                 <v-tooltip
@@ -91,7 +97,6 @@
                         :firewallRule="item"
                         :notHasAuthorization="!hasAuthorizationFormDialogEdit()"
                         @update="refreshFirewallRules"
-                        data-test="firewallRuleEdit-component"
                       />
                     </div>
                   </template>
@@ -106,10 +111,10 @@
                   <template v-slot:activator="{ props }">
                     <div v-bind="props">
                       <FirewallRuleDelete
+                        v-if="item.id"
                         :id="item.id"
                         @update="refreshFirewallRules"
                         :notHasAuthorization="!hasAuthorizationFormDialogEdit()"
-                        data-test="firewallRuleRemove-component"
                       />
                     </div>
                   </template>
@@ -124,8 +129,8 @@
   </div>
 </template>
 
-<script lang="ts">
-import { computed, defineComponent, ref, watch } from "vue";
+<script setup lang="ts">
+import { computed, ref, watch } from "vue";
 import axios, { AxiosError } from "axios";
 import { actions, authorizer } from "../../authorizer";
 import { filterType } from "../../interfaces/IFirewallRule";
@@ -140,167 +145,137 @@ import FirewallRuleEdit from "./FirewallRuleEdit.vue";
 import { INotificationsError } from "../../interfaces/INotifications";
 import handleError from "@/utils/handleError";
 
-export default defineComponent({
-  setup() {
-    const store = useStore();
-    const loading = ref(false);
-    const itemsPerPage = ref(10);
-    const page = ref(1);
+const headers = [
+  {
+    text: "Active",
+    value: "active",
+  },
+  {
+    text: "Priority",
+    value: "priority",
+  },
+  {
+    text: "Action",
+    value: "action",
+  },
+  {
+    text: "Source IP",
+    value: "source_ip",
+  },
+  {
+    text: "Username",
+    value: "username",
+  },
+  {
+    text: "Filter",
+    value: "filter",
+  },
+  {
+    text: "Actions",
+    value: "actions",
+  },
+];
 
-    const firewallRules = computed(() => store.getters["firewallRules/list"]);
+const store = useStore();
+const loading = ref(false);
+const itemsPerPage = ref(10);
+const page = ref(1);
 
-    const getNumberFirewallRules = computed(
-      () => store.getters["firewallRules/getNumberFirewalls"],
-    );
+const firewallRules = computed(() => store.getters["firewallRules/list"]);
 
-    const getFirewalls = async (perPagaeValue: number, pageValue: number) => {
-      if (!store.getters["boxs/getStatus"]) {
-        const data = {
-          perPage: perPagaeValue,
-          page: pageValue,
-        };
+const getNumberFirewallRules = computed(
+  () => store.getters["firewallRules/getNumberFirewalls"],
+);
 
-        try {
-          loading.value = true;
-          const hasRules = await store.dispatch("firewallRules/fetch", data);
-          if (!hasRules) {
-            page.value--;
-          }
-        } catch (error: unknown) {
-          if (axios.isAxiosError(error)) {
-            const axiosError = error as AxiosError;
-            if (axiosError.response?.status === 403) {
-              store.dispatch("snackbar/showSnackbarErrorAssociation");
-              handleError(error);
-            }
-          } else {
-            store.dispatch(
-              "snackbar/showSnackbarErrorLoading",
-              INotificationsError.firewallRuleList,
-            );
-            handleError(error);
-          }
-        } finally {
-          loading.value = false;
+const getFirewalls = async (perPagaeValue: number, pageValue: number) => {
+  if (!store.getters["boxs/getStatus"]) {
+    const data = {
+      perPage: perPagaeValue,
+      page: pageValue,
+    };
+
+    try {
+      loading.value = true;
+      const hasRules = await store.dispatch("firewallRules/fetch", data);
+      if (!hasRules) {
+        page.value--;
+      }
+    } catch (error: unknown) {
+      if (axios.isAxiosError(error)) {
+        const axiosError = error as AxiosError;
+        if (axiosError.response?.status === 403) {
+          store.dispatch("snackbar/showSnackbarErrorAssociation");
+          handleError(error);
         }
       } else {
-        // setArrays();
-        store.dispatch("boxs/setStatus", false);
-      }
-    };
-
-    const next = async () => {
-      await getFirewalls(itemsPerPage.value, ++page.value);
-    };
-
-    const prev = async () => {
-      try {
-        if (page.value > 1) await getFirewalls(itemsPerPage.value, --page.value);
-      } catch (error) {
-        store.dispatch("snackbar/setSnackbarErrorDefault");
-      }
-    };
-
-    const changeItemsPerPage = async (newItemsPerPage: number) => {
-      itemsPerPage.value = newItemsPerPage;
-    };
-
-    watch(itemsPerPage, async () => {
-      await getFirewalls(itemsPerPage.value, page.value);
-    });
-
-    const refreshFirewallRules = async () => {
-      try {
-        await store.dispatch("firewallRules/refresh");
-        // getFirewalls(itemsPerPage.value, page.value);
-      } catch (error: unknown) {
-        store.dispatch("snackbar/setSnackbarErrorDefault");
+        store.dispatch(
+          "snackbar/showSnackbarErrorLoading",
+          INotificationsError.firewallRuleList,
+        );
         handleError(error);
       }
-    };
+    } finally {
+      loading.value = false;
+    }
+  } else {
+    // setArrays();
+    store.dispatch("boxs/setStatus", false);
+  }
+};
 
-    const formatSourceIP = (ip: string) => (ip === ".*" ? "Any IP" : ip);
+const next = async () => {
+  await getFirewalls(itemsPerPage.value, ++page.value);
+};
 
-    const formatUsername = (username: string) => username === ".*" ? "All users" : username;
+const prev = async () => {
+  try {
+    if (page.value > 1) await getFirewalls(itemsPerPage.value, --page.value);
+  } catch (error) {
+    store.dispatch("snackbar/setSnackbarErrorDefault");
+  }
+};
 
-    const formatHostnameFilter = (filter: filterType) => filter.hostname === ".*" ? "All devices" : filter.hostname;
+const changeItemsPerPage = async (newItemsPerPage: number) => {
+  itemsPerPage.value = newItemsPerPage;
+};
 
-    const isHostname = (filter: filterType) => Object.prototype.hasOwnProperty.call(filter, "hostname");
-
-    const hasAuthorizationFormDialogEdit = () => {
-      const role = store.getters["auth/role"];
-      if (role !== "") {
-        return hasPermission(authorizer.role[role], actions.firewall.edit);
-      }
-
-      return false;
-    };
-
-    const hasAuthorizationFormDialogRemove = () => {
-      const role = store.getters["auth/role"];
-      if (role !== "") {
-        return hasPermission(authorizer.role[role], actions.firewall.remove);
-      }
-
-      return false;
-    };
-
-    return {
-      headers: [
-        {
-          text: "Active",
-          value: "active",
-        },
-        {
-          text: "Priority",
-          value: "priority",
-        },
-        {
-          text: "Action",
-          value: "action",
-        },
-        {
-          text: "Source IP",
-          value: "source_ip",
-        },
-        {
-          text: "Username",
-          value: "username",
-        },
-        {
-          text: "Filter",
-          value: "filter",
-        },
-        {
-          text: "Actions",
-          value: "actions",
-        },
-      ],
-      firewallRules,
-      getNumberFirewallRules,
-      loading,
-      itemsPerPage,
-      page,
-      next,
-      prev,
-      changeItemsPerPage,
-      refreshFirewallRules,
-      formatSourceIP,
-      formatUsername,
-      formatHostnameFilter,
-      isHostname,
-      lastSeen,
-      capitalizeText,
-      displayOnlyTenCharacters,
-      showTag,
-      hasAuthorizationFormDialogEdit,
-      hasAuthorizationFormDialogRemove,
-    };
-  },
-  components: {
-    DataTable,
-    FirewallRuleDelete,
-    FirewallRuleEdit,
-  },
+watch(itemsPerPage, async () => {
+  await getFirewalls(itemsPerPage.value, page.value);
 });
+
+const refreshFirewallRules = async () => {
+  try {
+    await store.dispatch("firewallRules/refresh");
+    // getFirewalls(itemsPerPage.value, page.value);
+  } catch (error: unknown) {
+    store.dispatch("snackbar/setSnackbarErrorDefault");
+    handleError(error);
+  }
+};
+
+const formatSourceIP = (ip: string) => (ip === ".*" ? "Any IP" : ip);
+
+const formatUsername = (username: string) => username === ".*" ? "All users" : username;
+
+const formatHostnameFilter = (filter: filterType) => filter.hostname === ".*" ? "All devices" : filter.hostname;
+
+const isHostname = (filter: filterType) => Object.prototype.hasOwnProperty.call(filter, "hostname");
+
+const hasAuthorizationFormDialogEdit = () => {
+  const role = store.getters["auth/role"];
+  if (role !== "") {
+    return hasPermission(authorizer.role[role], actions.firewall.edit);
+  }
+
+  return false;
+};
+
+const hasAuthorizationFormDialogRemove = () => {
+  const role = store.getters["auth/role"];
+  if (role !== "") {
+    return hasPermission(authorizer.role[role], actions.firewall.remove);
+  }
+
+  return false;
+};
 </script>

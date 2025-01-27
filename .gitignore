@@ -1,16 +1,27 @@
+.env.override
+docker-compose.override.yml
+
 *~
+*/tmp
+*/node_modules
+*.orig
+
 api_private_key
 api_public_key
 ssh_private_key
-/go.sum
-/ui/node_modules/
-*.orig
-.env.override
-docker-compose.override.yml
-api/api
-ssh/ssh
-agent/agent
-agent/shellhub.key
-cli/cli
+
 go.work
 go.work.sum
+go.sum
+
+# Docker binaries
+agent/agent
+api/api
+cli/cli
+gateway/gateway
+ssh/ssh
+
+agent/shellhub.key
+
+# Directory used by devscripts/run-agent to store binaries
+bin/agent

@@ -24,7 +24,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -34,13 +33,20 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/shellhub-io/shellhub/pkg/clock"
 	"github.com/shellhub-io/shellhub/pkg/wsconnadapter"
+	log "github.com/sirupsen/logrus"
 )
 
-var ErrDialerClosed = errors.New("revdial.Dialer closed")
+var (
+	ErrDialerClosed   = errors.New("revdial.Dialer closed")
+	ErrDialerTimedout = errors.New("revdial.Dialer timedout")
+)
 
 // dialerUniqParam is the parameter name of the GET URL form value
 // containing the Dialer's random unique ID.
 const dialerUniqParam = "revdial.dialer"
+
+// dialerKeepAliveTimeout represents the duration for the keepalive timeout
+const dialerKeepAliveTimeout = 35 * time.Second
 
 // The Dialer can create new connections.
 type Dialer struct {
@@ -49,18 +55,15 @@ type Dialer struct {
 	uniqID     string
 	pickupPath string // path + uniqID: "/revdial?revdial.dialer="+uniqID
 
-	incomingConn  chan net.Conn
-	pickupFailed  chan error
-	connReady     chan bool
-	donec         chan struct{}
-	keepAliveChan chan bool
-	closeOnce     sync.Once
+	incomingConn chan net.Conn
+	pickupFailed chan error
+	connReady    chan bool
+	donec        chan struct{}
+	closeOnce    sync.Once
+	logger       *log.Entry
 }
 
-var (
-	dmapMu  sync.Mutex
-	dialers = map[string]*Dialer{}
-)
+var dialers = sync.Map{}
 
 // NewDialer returns the side of the connection which will initiate
 // new connections. This will typically be the side which did the HTTP
@@ -68,16 +71,16 @@ var (
 // connection. The connPath is the HTTP path and optional query (but
 // without scheme or host) on the dialer where the ConnHandler is
 // mounted.
-func NewDialer(c net.Conn, connPath string) *Dialer {
+func NewDialer(logger *log.Entry, c net.Conn, connPath string) *Dialer {
 	d := &Dialer{
-		path:          connPath,
-		uniqID:        newUniqID(),
-		conn:          c,
-		donec:         make(chan struct{}),
-		keepAliveChan: make(chan bool),
-		connReady:     make(chan bool),
-		incomingConn:  make(chan net.Conn),
-		pickupFailed:  make(chan error),
+		path:         connPath,
+		uniqID:       newUniqID(),
+		conn:         c,
+		donec:        make(chan struct{}),
+		connReady:    make(chan bool),
+		incomingConn: make(chan net.Conn),
+		pickupFailed: make(chan error),
+		logger:       logger,
 	}
 
 	join := "?"
@@ -87,6 +90,8 @@ func NewDialer(c net.Conn, connPath string) *Dialer {
 	d.pickupPath = connPath + join + dialerUniqParam + "=" + d.uniqID
 	d.register()
 	go d.serve() // nolint:errcheck
+
+	d.logger.Debug("new dialer connection")
 
 	return d
 }
@@ -99,25 +104,17 @@ func newUniqID() string {
 }
 
 func (d *Dialer) register() {
-	dmapMu.Lock()
-	defer dmapMu.Unlock()
-	dialers[d.uniqID] = d
+	dialers.Store(d.uniqID, d)
 }
 
 func (d *Dialer) unregister() {
-	dmapMu.Lock()
-	defer dmapMu.Unlock()
-	delete(dialers, d.uniqID)
+	dialers.Delete(d.uniqID)
 }
 
 // Done returns a channel which is closed when d is closed (either by
 // this process on purpose, by a local error, or close or error from
 // the peer).
 func (d *Dialer) Done() <-chan struct{} { return d.donec }
-
-// KeepAlives returns a channel that receives a value when the
-// dialer receives a keep alive message.
-func (d *Dialer) KeepAlives() <-chan bool { return d.keepAliveChan }
 
 // Close closes the Dialer.
 func (d *Dialer) Close() error {
@@ -127,8 +124,11 @@ func (d *Dialer) Close() error {
 }
 
 func (d *Dialer) close() {
+	d.logger.Debug("dialer connection closed")
+
 	d.unregister()
 	d.conn.Close()
+	d.donec <- struct{}{}
 	close(d.donec)
 }
 
@@ -137,21 +137,34 @@ func (d *Dialer) Dial(ctx context.Context) (net.Conn, error) {
 	// First, tell serve that we want a connection:
 	select {
 	case d.connReady <- true:
+		d.logger.Debug("message true to conn ready channel")
 	case <-d.donec:
+		d.logger.Debug("dial done")
+
 		return nil, ErrDialerClosed
 	case <-ctx.Done():
+		d.logger.Debug("dial done due context cancellation")
+
 		return nil, ctx.Err()
 	}
 
 	// Then pick it up:
 	select {
 	case c := <-d.incomingConn:
+		d.logger.Debug("new incoming connection")
+
 		return c, nil
 	case err := <-d.pickupFailed:
+		d.logger.Debug("failed to pick-up connection")
+
 		return nil, err
 	case <-d.donec:
+		d.logger.Debug("dial done on pick-up")
+
 		return nil, ErrDialerClosed
 	case <-ctx.Done():
+		d.logger.Debug("dial done on pick-up due context cancellation")
+
 		return nil, ctx.Err()
 	}
 }
@@ -167,17 +180,27 @@ func (d *Dialer) matchConn(c net.Conn) {
 // alive and notifying the peer when new connections are available.
 func (d *Dialer) serve() error {
 	defer d.Close()
+
 	go func() {
 		defer d.Close()
+		defer d.logger.Debug("dialer serve done")
+
 		br := bufio.NewReader(d.conn)
 		for {
 			line, err := br.ReadSlice('\n')
 			if err != nil {
+				d.logger.WithError(err).Trace("failed to read the agent's command")
+
+				unexpectedError := websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure)
+				if !errors.Is(err, net.ErrClosed) && unexpectedError {
+					d.logger.WithError(err).Error("revdial.Dialer failed to read")
+				}
+
 				return
 			}
 			var msg controlMsg
 			if err := json.Unmarshal(line, &msg); err != nil {
-				log.Printf("revdial.Dialer read invalid JSON: %q: %v", line, err)
+				d.logger.WithError(err).WithField("line", line).Printf("revdial.Dialer read invalid JSON")
 
 				return
 			}
@@ -188,17 +211,21 @@ func (d *Dialer) serve() error {
 				select {
 				case d.pickupFailed <- err:
 				case <-d.donec:
+					d.logger.WithError(err).Debug("failed to pick-up connection")
+
 					return
 				}
 			case "keep-alive":
-				d.keepAliveChan <- true
 			default:
 				// Ignore unknown messages
+				log.WithField("message", msg.Command).Debug("unknown message received")
 			}
 		}
 	}()
 	for {
 		if err := d.sendMessage(controlMsg{Command: "keep-alive"}); err != nil {
+			d.logger.WithError(err).Debug("failed to send keep-alive message to device")
+
 			return err
 		}
 
@@ -212,6 +239,8 @@ func (d *Dialer) serve() error {
 				Command:  "conn-ready",
 				ConnPath: d.pickupPath,
 			}); err != nil {
+				d.logger.WithError(err).Debug("failed to send conn-ready message to device")
+
 				return err
 			}
 		case <-d.donec:
@@ -224,6 +253,8 @@ func (d *Dialer) serve() error {
 
 func (d *Dialer) sendMessage(m controlMsg) error {
 	if err := d.conn.SetWriteDeadline(clock.Now().Add(10 * time.Second)); err != nil {
+		d.logger.WithError(err).Debug("failed to set the write dead line to device")
+
 		return err
 	}
 
@@ -231,6 +262,8 @@ func (d *Dialer) sendMessage(m controlMsg) error {
 	j = append(j, '\n')
 
 	if _, err := d.conn.Write(j); err != nil {
+		d.logger.WithError(err).Debug("failed to write on the connection")
+
 		return err
 	}
 
@@ -280,12 +313,21 @@ type controlMsg struct {
 // run reads control messages from the public server forever until the connection dies, which
 // then closes the listener.
 func (ln *Listener) run() {
-	defer ln.Close()
+	done := func() {
+		ln.Close()
+	}
+
+	var onceDefer sync.Once
+	defer onceDefer.Do(done)
+
+	closeTimer := time.AfterFunc(dialerKeepAliveTimeout, done)
 
 	// Write loop
 	writec := make(chan []byte, 8)
 	ln.writec = writec
 	go func() {
+		defer onceDefer.Do(done)
+
 		for {
 			select {
 			case <-ln.donec:
@@ -293,7 +335,6 @@ func (ln *Listener) run() {
 			case msg := <-writec:
 				if _, err := ln.sc.Write(msg); err != nil {
 					log.Printf("revdial.Listener: error writing message to server: %v", err)
-					ln.Close()
 
 					return
 				}
@@ -302,6 +343,8 @@ func (ln *Listener) run() {
 	}()
 
 	go func() {
+		defer onceDefer.Do(done)
+
 		// Read loop
 		br := bufio.NewReader(ln.sc)
 		for {
@@ -317,8 +360,9 @@ func (ln *Listener) run() {
 			}
 			switch msg.Command {
 			case "keep-alive":
-			// Occasional no-op message from server to keep
-			// us alive through NAT timeouts.
+				// Occasional no-op message from server to keep
+				// us alive through NAT timeouts.
+				closeTimer.Reset(dialerKeepAliveTimeout)
 			case "conn-ready":
 				go ln.grabConn(msg.ConnPath)
 			default:
@@ -438,9 +482,7 @@ func ConnHandler(upgrader websocket.Upgrader) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		dialerUniq := r.FormValue(dialerUniqParam)
 
-		dmapMu.Lock()
-		d, ok := dialers[dialerUniq]
-		dmapMu.Unlock()
+		d, ok := dialers.Load(dialerUniq)
 		if !ok {
 			http.Error(w, "unknown dialer", http.StatusBadRequest)
 
@@ -454,6 +496,6 @@ func ConnHandler(upgrader websocket.Upgrader) http.Handler {
 			return
 		}
 
-		d.matchConn(wsconnadapter.New(wsConn))
+		d.(*Dialer).matchConn(wsconnadapter.New(wsConn))
 	})
 }

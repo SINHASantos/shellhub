@@ -1,220 +1,99 @@
-package mongo
+package mongo_test
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
-	"time"
 
-	"github.com/cnf/structhash"
+	"github.com/shellhub-io/mongotest"
 	"github.com/shellhub-io/shellhub/api/pkg/dbtest"
-	"github.com/shellhub-io/shellhub/api/pkg/guard"
+	"github.com/shellhub-io/shellhub/api/store"
+	"github.com/shellhub-io/shellhub/api/store/mongo"
 	"github.com/shellhub-io/shellhub/pkg/cache"
-	"github.com/shellhub-io/shellhub/pkg/clock"
-	"github.com/shellhub-io/shellhub/pkg/models"
-	"github.com/stretchr/testify/assert"
+	log "github.com/sirupsen/logrus"
+	mongodb "go.mongodb.org/mongo-driver/mongo"
 )
 
-type Data struct {
-	User              models.User
-	Namespace         models.Namespace
-	FirewallRule      models.FirewallRule
-	Device            models.Device
-	Subscription      models.Billing
-	PublicKey         models.PublicKey
-	Session           models.Session
-	RecordedSession   models.RecordedSession
-	DeviceAuthRequest models.DeviceAuthRequest
-	Context           context.Context
-}
+var srv = &dbtest.Server{}
+var db *mongodb.Database
+var s store.Store
 
-func TestStoreGetStats(t *testing.T) {
-	db := dbtest.DBServer{}
-	defer db.Stop()
+const (
+	fixtureAPIKeys          = "api-key"           // Check "store.mongo.fixtures.api-keys" for fixture info
+	fixtureConnectedDevices = "connected_devices" // Check "store.mongo.fixtures.connected_devices" for fixture info
+	fixtureDevices          = "devices"           // Check "store.mongo.fixtures.devices" for fixture info
+	fixtureSessions         = "sessions"          // Check "store.mongo.fixtures.sessions" for fixture info
+	fixtureActiveSessions   = "active_sessions"   // Check "store.mongo.fixtures.active_sessions" for fixture info
+	fixtureFirewallRules    = "firewall_rules"    // Check "store.mongo.fixtures.firewall_rules" for fixture info
+	fixturePublicKeys       = "public_keys"       // Check "store.mongo.fixtures.public_keys" for fixture info
+	fixturePrivateKeys      = "private_keys"      // Check "store.mongo.fixtures.private_keys" for fixture info
+	fixtureUsers            = "users"             // Check "store.mongo.fixtures.users" for fixture iefo
+	fixtureNamespaces       = "namespaces"        // Check "store.mongo.fixtures.namespaces" for fixture info
+	fixtureRecoveryTokens   = "recovery_tokens"   // Check "store.mongo.fixtures.recovery_tokens" for fixture info
+)
 
-	ctx := context.TODO()
-	mongostore := NewStore(db.Client().Database("test"), cache.NewNullCache())
-	user := models.User{UserData: models.UserData{Name: "name", Username: "username", Email: "email"}, UserPassword: models.UserPassword{Password: "password"}}
-	namespace := models.Namespace{Name: "name", Owner: "owner", TenantID: "tenant"}
-	_, err := db.Client().Database("test").Collection("users").InsertOne(ctx, user)
-	assert.NoError(t, err)
-	_, err = db.Client().Database("test").Collection("namespaces").InsertOne(ctx, namespace)
-	assert.NoError(t, err)
-	authReq := &models.DeviceAuthRequest{
-		DeviceAuth: &models.DeviceAuth{
-			TenantID: "tenant",
-			Identity: &models.DeviceIdentity{
-				MAC: "mac",
-			},
-		},
-		Sessions: []string{"session"},
+func TestMain(m *testing.M) {
+	log.Info("Starting store tests")
+
+	ctx := context.Background()
+
+	srv.Container.Database = "test"
+	_, file, _, _ := runtime.Caller(0)
+	srv.Fixtures.Root = filepath.Join(filepath.Dir(file), "fixtures")
+	srv.Fixtures.PreInsertFuncs = []mongotest.PreInsertFunc{
+		mongotest.SimpleConvertObjID("users", "_id"),
+		mongotest.SimpleConvertTime("users", "created_at"),
+		mongotest.SimpleConvertTime("users", "last_login"),
+		mongotest.SimpleConvertObjID("public_keys", "_id"),
+		mongotest.SimpleConvertBytes("public_keys", "data"),
+		mongotest.SimpleConvertTime("public_keys", "created_at"),
+		mongotest.SimpleConvertObjID("private_keys", "_id"),
+		mongotest.SimpleConvertBytes("private_keys", "data"),
+		mongotest.SimpleConvertTime("private_keys", "created_at"),
+		mongotest.SimpleConvertObjID("namespaces", "_id"),
+		mongotest.SimpleConvertTime("namespaces", "created_at"),
+		mongotest.SimpleConvertObjID("devices", "_id"),
+		mongotest.SimpleConvertTime("devices", "created_at"),
+		mongotest.SimpleConvertTime("devices", "last_seen"),
+		mongotest.SimpleConvertTime("devices", "status_updated_at"),
+		mongotest.SimpleConvertTime("connected_devices", "last_seen"),
+		mongotest.SimpleConvertObjID("firewall_rules", "_id"),
+		mongotest.SimpleConvertObjID("sessions", "_id"),
+		mongotest.SimpleConvertTime("sessions", "started_at"),
+		mongotest.SimpleConvertTime("sessions", "last_seen"),
+		mongotest.SimpleConvertObjID("active_sessions", "_id"),
+		mongotest.SimpleConvertTime("active_sessions", "last_seen"),
 	}
 
-	uid := sha256.Sum256(structhash.Dump(authReq.DeviceAuth, 1))
-
-	device := models.Device{
-		UID:      hex.EncodeToString(uid[:]),
-		Identity: authReq.Identity,
-		TenantID: authReq.TenantID,
-		LastSeen: clock.Now(),
+	if err := srv.Up(ctx); err != nil {
+		log.WithError(err).Error("Failed to UP the mongodb container")
+		os.Exit(1)
 	}
 
-	err = mongostore.DeviceCreate(ctx, device, "")
-	assert.NoError(t, err)
+	log.Info("Connecting to ", srv.Container.ConnectionString)
 
-	session := models.Session{
-		Username:      "user",
-		UID:           "uid",
-		DeviceUID:     models.UID(hex.EncodeToString(uid[:])),
-		IPAddress:     "0.0.0.0",
-		Authenticated: true,
+	var err error
+	_, db, err = mongo.Connect(ctx, srv.Container.ConnectionString+"/"+srv.Container.Database)
+	if err != nil {
+		log.WithError(err).Error("Failed to connect to mongodb")
+		os.Exit(1)
 	}
 
-	s, err := mongostore.SessionCreate(ctx, session)
-	assert.NoError(t, err)
-	assert.NotEmpty(t, s)
-
-	stats, err := mongostore.GetStats(ctx)
-	assert.NoError(t, err)
-	assert.NotEmpty(t, stats)
-	assert.Equal(t, 0, stats.RegisteredDevices)
-	assert.Equal(t, 0, stats.OnlineDevices)
-	assert.Equal(t, 1, stats.PendingDevices)
-	assert.Equal(t, 0, stats.RejectedDevices)
-	assert.Equal(t, 1, stats.ActiveSessions)
-}
-
-func TestStoreLoadLicense(t *testing.T) {
-	db := dbtest.DBServer{}
-	defer db.Stop()
-
-	ctx := context.TODO()
-	mongostore := NewStore(db.Client().Database("test"), cache.NewNullCache())
-
-	err := mongostore.LicenseSave(ctx, &models.License{
-		RawData:   []byte("bar"),
-		CreatedAt: clock.Now().Local().Truncate(time.Millisecond),
-	})
-	assert.NoError(t, err)
-
-	license := &models.License{
-		RawData:   []byte("foo"),
-		CreatedAt: clock.Now().Local().Truncate(time.Millisecond),
+	s, err = mongo.NewStore(ctx, db, cache.NewNullCache())
+	if err != nil {
+		log.WithError(err).Error("Failed to create the mongodb store")
+		os.Exit(1)
 	}
 
-	err = mongostore.LicenseSave(ctx, license)
-	assert.NoError(t, err)
+	code := m.Run()
 
-	loadedLicense, err := mongostore.LicenseLoad(ctx)
-	assert.NoError(t, err)
-
-	assert.True(t, license.CreatedAt.Equal(loadedLicense.CreatedAt))
-
-	// decoded value is not in local this won't match with assert.Equal
-	loadedLicense.CreatedAt = loadedLicense.CreatedAt.Local()
-	assert.Equal(t, license, loadedLicense)
-}
-
-func TestStoreSaveLicense(t *testing.T) {
-	db := dbtest.DBServer{}
-	defer db.Stop()
-
-	ctx := context.TODO()
-	mongostore := NewStore(db.Client().Database("test"), cache.NewNullCache())
-
-	err := mongostore.LicenseSave(ctx, &models.License{
-		RawData:   []byte("foo"),
-		CreatedAt: clock.Now().Truncate(time.Millisecond),
-	})
-	assert.NoError(t, err)
-}
-
-func initData() Data {
-	authReq := models.DeviceAuthRequest{
-		DeviceAuth: &models.DeviceAuth{
-			TenantID: "00000000-0000-4000-0000-000000000000",
-			Identity: &models.DeviceIdentity{
-				MAC: "mac",
-			},
-		},
-		Sessions: []string{"session"},
+	log.Info("Stopping store tests")
+	if err := srv.Down(ctx); err != nil {
+		log.WithError(err).Error("Failed to DOWN the mongodb container")
+		os.Exit(1)
 	}
 
-	uid := sha256.Sum256(structhash.Dump(authReq.DeviceAuth, 1))
-
-	return Data{
-		models.User{
-			UserData: models.UserData{
-				Name:     "user",
-				Username: "username",
-				Email:    "user@shellhub.io",
-			},
-			UserPassword: models.UserPassword{
-				Password: "password",
-			},
-			ID: "507f1f77bcf86cd799439011",
-		},
-		models.Namespace{
-			Name:     "namespace",
-			Owner:    "507f1f77bcf86cd799439011",
-			TenantID: "00000000-0000-4000-0000-000000000000",
-			Members: []models.Member{
-				{
-					ID:   "507f1f77bcf86cd799439011",
-					Role: guard.RoleOwner,
-				},
-			},
-			MaxDevices: -1,
-			Settings:   &models.NamespaceSettings{SessionRecord: true},
-		},
-		models.FirewallRule{
-			FirewallRuleFields: models.FirewallRuleFields{
-				Priority: 1,
-				Action:   "allow",
-				Active:   true,
-				SourceIP: ".*",
-				Username: ".*",
-				Filter: models.FirewallFilter{
-					Tags: []string{},
-				},
-			},
-		},
-		models.Device{
-			UID:      hex.EncodeToString(uid[:]),
-			Identity: authReq.Identity,
-			TenantID: authReq.TenantID,
-			LastSeen: clock.Now(),
-		},
-		models.Billing{
-			SubscriptionID:   "subc_1111x",
-			CurrentPeriodEnd: time.Date(2021, time.Month(6), 21, 1, 10, 30, 0, time.UTC).Unix(),
-			Active:           true,
-			Status:           "",
-		},
-		models.PublicKey{
-			Data:            []byte("teste"),
-			Fingerprint:     "fingerprint",
-			TenantID:        "tenant1",
-			PublicKeyFields: models.PublicKeyFields{Name: "teste1", Filter: models.PublicKeyFilter{Hostname: ".*"}},
-		},
-		models.Session{
-			Username:      "username",
-			UID:           "uid",
-			TenantID:      "00000000-0000-4000-0000-000000000000",
-			DeviceUID:     models.UID(hex.EncodeToString(uid[:])),
-			IPAddress:     "0.0.0.0",
-			Authenticated: true,
-		},
-		models.RecordedSession{
-			UID:      models.UID("uid"),
-			Message:  "message",
-			TenantID: "00000000-0000-4000-0000-000000000000",
-			Time:     clock.Now(),
-			Width:    0,
-			Height:   0,
-		},
-		authReq,
-		context.TODO(),
-	}
+	os.Exit(code)
 }

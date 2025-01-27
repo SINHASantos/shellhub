@@ -3,8 +3,10 @@ package mongo
 import (
 	"context"
 	"io"
+	"reflect"
 
 	"github.com/shellhub-io/shellhub/api/store"
+	"github.com/shellhub-io/shellhub/pkg/errors"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -34,6 +36,13 @@ func AggregateCount(ctx context.Context, coll *mongo.Collection, pipeline []bson
 	return resp.Count, nil
 }
 
+// ErrLayer is an error level. Each error defined at this level, is container to it.
+// ErrLayer is the errors' level for mongo's error.
+const ErrLayer = "mongo"
+
+// ErrMongo is the error for any unknown mongo error.
+var ErrMongo = errors.New("mongo error", ErrLayer, 1)
+
 func FromMongoError(err error) error {
 	switch {
 	case err == mongo.ErrNoDocuments, err == io.EOF:
@@ -43,6 +52,52 @@ func FromMongoError(err error) error {
 	case mongo.IsDuplicateKeyError(err):
 		return store.ErrDuplicate
 	default:
-		return err
+		if err == nil {
+			return nil
+		}
+
+		return errors.Wrap(ErrMongo, err)
+	}
+}
+
+// removeDuplicate removes duplicate elements from a slice while maintaining the original order.
+func removeDuplicate[T comparable](slice []T) []T {
+	allKeys := make(map[T]bool)
+	list := []T{}
+	for _, item := range slice {
+		if _, value := allKeys[item]; !value {
+			allKeys[item] = true
+			list = append(list, item)
+		}
+	}
+
+	return list
+}
+
+// structToBson converts a struct to it's bson representation.
+func structToBson[T any](v T) primitive.M {
+	data, err := bson.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+
+	doc := make(primitive.M)
+	if err := bson.Unmarshal(data, &doc); err != nil {
+		panic(err)
+	}
+
+	return doc
+}
+
+// sanitizeBson recursively sanitizes a bson, setting zero-value fields to nil
+func sanitizeBson(data primitive.M) {
+	for k, v := range data {
+		if reflect.TypeOf(v) == reflect.TypeOf(primitive.M{}) {
+			sanitizeBson(v.(primitive.M))
+		} else {
+			if v != nil && reflect.DeepEqual(v, reflect.Zero(reflect.TypeOf(v)).Interface()) {
+				data[k] = nil
+			}
+		}
 	}
 }

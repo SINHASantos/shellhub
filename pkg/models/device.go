@@ -2,8 +2,6 @@ package models
 
 import (
 	"time"
-
-	jwt "github.com/golang-jwt/jwt/v4"
 )
 
 type DeviceStatus string
@@ -14,12 +12,13 @@ const (
 	DeviceStatusRejected DeviceStatus = "rejected"
 	DeviceStatusRemoved  DeviceStatus = "removed"
 	DeviceStatusUnused   DeviceStatus = "unused"
+	DeviceStatusEmpty    DeviceStatus = ""
 )
 
 type Device struct {
 	// UID is the unique identifier for a device.
 	UID              string          `json:"uid"`
-	Name             string          `json:"name" bson:"name,omitempty" validate:"required,hostname_rfc1123,excludes=."`
+	Name             string          `json:"name" bson:"name,omitempty" validate:"required,device_name"`
 	Identity         *DeviceIdentity `json:"identity"`
 	Info             *DeviceInfo     `json:"info"`
 	PublicKey        string          `json:"public_key" bson:"public_key"`
@@ -36,13 +35,6 @@ type Device struct {
 	PublicURL        bool            `json:"public_url" bson:"public_url,omitempty"`
 	PublicURLAddress string          `json:"public_url_address" bson:"public_url_address,omitempty"`
 	Acceptable       bool            `json:"acceptable" bson:"acceptable,omitempty"`
-}
-
-type DeviceAuthClaims struct {
-	UID string `json:"uid"`
-
-	AuthClaims           `mapstruct:",squash"`
-	jwt.RegisteredClaims `mapstruct:",squash"`
 }
 
 type DeviceAuthRequest struct {
@@ -81,7 +73,6 @@ type ConnectedDevice struct {
 	UID      string    `json:"uid"`
 	TenantID string    `json:"tenant_id" bson:"tenant_id"`
 	LastSeen time.Time `json:"last_seen" bson:"last_seen"`
-	Status   string    `json:"status" bson:"status"`
 }
 
 type DevicePosition struct {
@@ -92,4 +83,14 @@ type DevicePosition struct {
 type DeviceRemoved struct {
 	Device    *Device   `json:"device" bson:"device"`
 	Timestamp time.Time `json:"timestamp" bson:"timestamp"`
+}
+
+type DeviceTag struct {
+	Tag string `validate:"required,min=3,max=255,alphanum,ascii,excludes=/@&:"`
+}
+
+func NewDeviceTag(tag string) DeviceTag {
+	return DeviceTag{
+		Tag: tag,
+	}
 }

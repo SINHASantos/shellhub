@@ -1,24 +1,25 @@
 package routes
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
 	svc "github.com/shellhub-io/shellhub/api/services"
-
-	"github.com/shellhub-io/shellhub/api/pkg/guard"
 	"github.com/shellhub-io/shellhub/api/services/mocks"
-	"github.com/shellhub-io/shellhub/pkg/api/paginator"
+	"github.com/shellhub-io/shellhub/pkg/api/authorizer"
+	"github.com/shellhub-io/shellhub/pkg/api/query"
 	"github.com/shellhub-io/shellhub/pkg/api/requests"
 	"github.com/shellhub-io/shellhub/pkg/models"
 	"github.com/stretchr/testify/assert"
 	gomock "github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 )
 
 func TestGetDevice(t *testing.T) {
@@ -73,7 +74,7 @@ func TestGetDevice(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/devices/%s", tc.uid), nil)
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Role", guard.RoleOwner)
+			req.Header.Set("X-Role", authorizer.RoleOwner.String())
 			rec := httptest.NewRecorder()
 
 			e := NewRouter(mock)
@@ -130,7 +131,7 @@ func TestDeleteDevice(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/devices/%s", tc.uid), nil)
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Role", guard.RoleOwner)
+			req.Header.Set("X-Role", authorizer.RoleOwner.String())
 			rec := httptest.NewRecorder()
 
 			e := NewRouter(mock)
@@ -157,7 +158,7 @@ func TestRenameDevice(t *testing.T) {
 				DeviceParam: requests.DeviceParam{UID: ""},
 			},
 			tenant:         "tenant-id",
-			requiredMocks:  func(req requests.DeviceRename) {},
+			requiredMocks:  func(_ requests.DeviceRename) {},
 			expectedStatus: http.StatusNotFound,
 		},
 		{
@@ -197,7 +198,7 @@ func TestRenameDevice(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodPatch, fmt.Sprintf("/api/devices/%s", tc.renamePayload.UID), strings.NewReader(string(jsonData)))
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Role", guard.RoleOwner)
+			req.Header.Set("X-Role", authorizer.RoleOwner.String())
 			req.Header.Set("X-Tenant-ID", tc.tenant)
 			rec := httptest.NewRecorder()
 
@@ -261,7 +262,7 @@ func TestGetDeviceByPublicURLAddress(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/internal/devices/public/%s", tc.address), nil)
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Role", guard.RoleOwner)
+			req.Header.Set("X-Role", authorizer.RoleOwner.String())
 			rec := httptest.NewRecorder()
 
 			e := NewRouter(mock)
@@ -282,127 +283,87 @@ func TestGetDeviceByPublicURLAddress(t *testing.T) {
 func TestGetDeviceList(t *testing.T) {
 	mock := new(mocks.Service)
 
-	filter := []map[string]interface{}{
-		{
-			"type": "property",
-			"params": map[string]interface{}{
-				"name":     "name",
-				"operator": "contains",
-				"value":    "examplespace",
-			},
-		},
-	}
-
-	jsonData, err := json.Marshal(filter)
-	if err != nil {
-		assert.NoError(t, err)
-	}
-
-	filteb64 := base64.StdEncoding.EncodeToString(jsonData)
 	type Expected struct {
-		expectedSession []models.Device
-		expectedStatus  int
+		devices []models.Device
+		status  int
 	}
+
 	cases := []struct {
-		title         string
-		filter        string
-		queryPayload  filterQuery
-		tenant        string
-		requiredMocks func(query filterQuery)
+		description   string
+		req           *requests.DeviceList
+		requiredMocks func()
 		expected      Expected
 	}{
 		{
-			title: "fails when try to get a device list existing",
-			queryPayload: filterQuery{
-				Filter:  filteb64,
-				Status:  models.DeviceStatus("online"),
-				SortBy:  "name",
-				OrderBy: "asc",
-				Query: paginator.Query{
-					Page:    1,
-					PerPage: 10,
-				},
+			description: "fails when try to get a device list existing",
+			req: &requests.DeviceList{
+				TenantID:     "00000000-0000-4000-0000-000000000000",
+				DeviceStatus: models.DeviceStatus("online"),
+				Paginator:    query.Paginator{Page: 1, PerPage: 10},
+				Sorter:       query.Sorter{By: "name", Order: "asc"},
+				Filters:      query.Filters{},
 			},
-			tenant: "tenant-id",
-			requiredMocks: func(query filterQuery) {
-				query.Normalize()
-				raw, err := base64.StdEncoding.DecodeString(query.Filter)
-				if err != nil {
-					assert.NoError(t, err)
-				}
-
-				var filters []models.Filter
-				if err := json.Unmarshal(raw, &filters); len(raw) > 0 && err != nil {
-					assert.NoError(t, err)
-				}
-
-				mock.On("ListDevices", gomock.Anything, "tenant-id", query.Query, filters, query.Status, query.SortBy, query.OrderBy).Return(nil, 0, svc.ErrDeviceNotFound).Once()
+			requiredMocks: func() {
+				mock.
+					On("ListDevices", gomock.Anything, gomock.AnythingOfType("*requests.DeviceList")).
+					Return(nil, 0, svc.ErrDeviceNotFound).
+					Once()
 			},
 			expected: Expected{
-				expectedSession: nil,
-				expectedStatus:  http.StatusNotFound,
+				devices: []models.Device{},
+				status:  http.StatusNotFound,
 			},
 		},
 		{
-			title: "fails when try to get a device list existing",
-			queryPayload: filterQuery{
-				Filter:  filteb64,
-				Status:  models.DeviceStatus("online"),
-				SortBy:  "name",
-				OrderBy: "asc",
-				Query: paginator.Query{
-					Page:    1,
-					PerPage: 10,
-				},
+			description: "fails when try to get a device list existing",
+			req: &requests.DeviceList{
+				TenantID:     "00000000-0000-4000-0000-000000000000",
+				DeviceStatus: models.DeviceStatus("online"),
+				Paginator:    query.Paginator{Page: 1, PerPage: 10},
+				Sorter:       query.Sorter{By: "name", Order: "asc"},
+				Filters:      query.Filters{},
 			},
-			tenant: "tenant-id",
-			requiredMocks: func(query filterQuery) {
-				query.Normalize()
-				raw, err := base64.StdEncoding.DecodeString(query.Filter)
-				if err != nil {
-					assert.NoError(t, err)
-				}
-
-				var filters []models.Filter
-				if err := json.Unmarshal(raw, &filters); len(raw) > 0 && err != nil {
-					assert.NoError(t, err)
-				}
-
-				mock.On("ListDevices", gomock.Anything, "tenant-id", query.Query, filters, query.Status, query.SortBy, query.OrderBy).Return([]models.Device{}, 1, nil).Once()
+			requiredMocks: func() {
+				mock.
+					On("ListDevices", gomock.Anything, gomock.AnythingOfType("*requests.DeviceList")).
+					Return([]models.Device{}, 0, nil).
+					Once()
 			},
 			expected: Expected{
-				expectedSession: []models.Device{},
-				expectedStatus:  http.StatusOK,
+				devices: []models.Device{},
+				status:  http.StatusOK,
 			},
 		},
 	}
 
 	for _, tc := range cases {
-		t.Run(tc.title, func(t *testing.T) {
-			tc.requiredMocks(tc.queryPayload)
+		t.Run(tc.description, func(t *testing.T) {
+			tc.requiredMocks()
 
-			jsonData, err := json.Marshal(tc.queryPayload)
-			if err != nil {
-				assert.NoError(t, err)
-			}
+			urlVal := &url.Values{}
+			urlVal.Set("page", strconv.Itoa(tc.req.Page))
+			urlVal.Set("per_page", strconv.Itoa(tc.req.PerPage))
+			urlVal.Set("sort_by", tc.req.By)
+			urlVal.Set("order_by", tc.req.Order)
+			urlVal.Set("status", string(tc.req.DeviceStatus))
 
-			req := httptest.NewRequest(http.MethodGet, "/api/devices", strings.NewReader(string(jsonData)))
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Role", guard.RoleOwner)
-			req.Header.Set("X-Tenant-ID", tc.tenant)
+			req := httptest.NewRequest(http.MethodGet, "/api/devices?"+urlVal.Encode(), nil)
+			req.Header.Set("X-Role", authorizer.RoleOwner.String())
+			req.Header.Set("X-Tenant-ID", tc.req.TenantID)
+
 			rec := httptest.NewRecorder()
-
 			e := NewRouter(mock)
 			e.ServeHTTP(rec, req)
 
-			assert.Equal(t, tc.expected.expectedStatus, rec.Result().StatusCode)
-
-			var session []models.Device
-			if err := json.NewDecoder(rec.Result().Body).Decode(&session); err != nil {
-				assert.ErrorIs(t, io.EOF, err)
+			devices := make([]models.Device, 0)
+			if len(tc.expected.devices) != 0 {
+				if err := json.NewDecoder(rec.Result().Body).Decode(&devices); err != nil {
+					require.ErrorIs(t, io.EOF, err)
+				}
 			}
 
-			assert.Equal(t, tc.expected.expectedSession, session)
+			require.Equal(t, tc.expected.status, rec.Result().StatusCode)
+			require.Equal(t, tc.expected.devices, devices)
 		})
 	}
 }
@@ -426,7 +387,7 @@ func TestOfflineDevice(t *testing.T) {
 			title: "fails when try to setting a non-existing device as offline",
 			uid:   "1234",
 			requiredMocks: func() {
-				mock.On("OffineDevice", gomock.Anything, models.UID("1234"), false).Return(svc.ErrNotFound)
+				mock.On("OfflineDevice", gomock.Anything, models.UID("1234")).Return(svc.ErrNotFound)
 			},
 			expectedStatus: http.StatusNotFound,
 		},
@@ -434,7 +395,7 @@ func TestOfflineDevice(t *testing.T) {
 			title: "success when try to setting an existing device as offline",
 			uid:   "123",
 			requiredMocks: func() {
-				mock.On("OffineDevice", gomock.Anything, models.UID("123"), false).Return(nil)
+				mock.On("OfflineDevice", gomock.Anything, models.UID("123")).Return(nil)
 			},
 			expectedStatus: http.StatusOK,
 		},
@@ -446,7 +407,7 @@ func TestOfflineDevice(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/internal/devices/%s/offline", tc.uid), nil)
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Role", guard.RoleOwner)
+			req.Header.Set("X-Role", authorizer.RoleOwner.String())
 			req.Header.Set("X-Tenant-ID", "tenant-id")
 			rec := httptest.NewRecorder()
 
@@ -477,7 +438,7 @@ func TestLookupDevice(t *testing.T) {
 				Username:  "user1",
 				IPAddress: "192.168.1.100",
 			},
-			requiredMocks: func(req requests.DeviceLookup) {},
+			requiredMocks: func(_ requests.DeviceLookup) {},
 			expected: Expected{
 				expectedSession: nil,
 				expectedStatus:  http.StatusBadRequest,
@@ -528,7 +489,7 @@ func TestLookupDevice(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodGet, "/internal/lookup", strings.NewReader(string(jsonData)))
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Role", guard.RoleOwner)
+			req.Header.Set("X-Role", authorizer.RoleOwner.String())
 			rec := httptest.NewRecorder()
 
 			e := NewRouter(mock)
@@ -542,57 +503,6 @@ func TestLookupDevice(t *testing.T) {
 			}
 
 			assert.Equal(t, tc.expected.expectedSession, session)
-		})
-	}
-}
-
-func TestHeartbeatDevice(t *testing.T) {
-	mock := new(mocks.Service)
-
-	cases := []struct {
-		title          string
-		uid            string
-		requiredMocks  func()
-		expectedStatus int
-	}{
-		{
-			title:          "fails when bind fails to validate uid",
-			uid:            "",
-			requiredMocks:  func() {},
-			expectedStatus: http.StatusBadRequest,
-		},
-		{
-			title: "fails when try to heartbeat non-existing device",
-			uid:   "1234",
-			requiredMocks: func() {
-				mock.On("DeviceHeartbeat", gomock.Anything, models.UID("1234")).Return(svc.ErrNotFound).Once()
-			},
-			expectedStatus: http.StatusNotFound,
-		},
-		{
-			title: "success when try to heartbeat of a existing device",
-			uid:   "123",
-			requiredMocks: func() {
-				mock.On("DeviceHeartbeat", gomock.Anything, models.UID("123")).Return(nil).Once()
-			},
-			expectedStatus: http.StatusOK,
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.title, func(t *testing.T) {
-			tc.requiredMocks()
-
-			req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/internal/devices/%s/heartbeat", tc.uid), nil)
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Role", guard.RoleOwner)
-			req.Header.Set("X-Tenant-ID", "tenant-id")
-			rec := httptest.NewRecorder()
-
-			e := NewRouter(mock)
-			e.ServeHTTP(rec, req)
-
-			assert.Equal(t, tc.expectedStatus, rec.Result().StatusCode)
 		})
 	}
 }
@@ -612,7 +522,7 @@ func TestRemoveDeviceTag(t *testing.T) {
 				DeviceParam: requests.DeviceParam{UID: ""},
 				TagBody:     requests.TagBody{Tag: "tag"},
 			},
-			requiredMocks:  func(req requests.DeviceRemoveTag) {},
+			requiredMocks:  func(_ requests.DeviceRemoveTag) {},
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
@@ -621,7 +531,7 @@ func TestRemoveDeviceTag(t *testing.T) {
 				TagBody: requests.TagBody{Tag: "tg"},
 			},
 			expectedStatus: http.StatusBadRequest,
-			requiredMocks:  func(req requests.DeviceRemoveTag) {},
+			requiredMocks:  func(_ requests.DeviceRemoveTag) {},
 		},
 		{
 			title: "fails when validate because the tag does not have a max of 255 characters",
@@ -629,7 +539,7 @@ func TestRemoveDeviceTag(t *testing.T) {
 				TagBody: requests.TagBody{Tag: "BCD3821E12F7A6D89295D86E277F2C365D7A4C3FCCD75D8A2F46C0A556A8EBAAF0845C85D50241FC2F9806D8668FF75D262FDA0A055784AD36D8CA7D2BB600C9BCD3821E12F7A6D89295D86E277F2C365D7A4C3FCCD75D8A2F46C0A556A8EBAAF0845C85D50241FC2F9806D8668FF75D262FDA0A055784AD36D8CA7D2BB600C9"},
 			},
 			expectedStatus: http.StatusBadRequest,
-			requiredMocks:  func(req requests.DeviceRemoveTag) {},
+			requiredMocks:  func(_ requests.DeviceRemoveTag) {},
 		},
 		{
 			title: "fails when validate because have a '/' with in your characters",
@@ -637,7 +547,7 @@ func TestRemoveDeviceTag(t *testing.T) {
 				TagBody: requests.TagBody{Tag: "test/"},
 			},
 			expectedStatus: http.StatusBadRequest,
-			requiredMocks:  func(req requests.DeviceRemoveTag) {},
+			requiredMocks:  func(_ requests.DeviceRemoveTag) {},
 		},
 		{
 			title: "fails when validate because have a '&' with in your characters",
@@ -645,7 +555,7 @@ func TestRemoveDeviceTag(t *testing.T) {
 				TagBody: requests.TagBody{Tag: "test&"},
 			},
 			expectedStatus: http.StatusBadRequest,
-			requiredMocks:  func(req requests.DeviceRemoveTag) {},
+			requiredMocks:  func(_ requests.DeviceRemoveTag) {},
 		},
 		{
 			title: "fails when validate because have a '@' with in your characters",
@@ -653,7 +563,7 @@ func TestRemoveDeviceTag(t *testing.T) {
 				TagBody: requests.TagBody{Tag: "test@"},
 			},
 			expectedStatus: http.StatusBadRequest,
-			requiredMocks:  func(req requests.DeviceRemoveTag) {},
+			requiredMocks:  func(_ requests.DeviceRemoveTag) {},
 		},
 		{
 			title: "fails when try to remove a non-existing device tag",
@@ -691,7 +601,7 @@ func TestRemoveDeviceTag(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/devices/%s/tags/%s", tc.updatePayload.UID, tc.updatePayload.Tag), strings.NewReader(string(jsonData)))
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Role", guard.RoleOwner)
+			req.Header.Set("X-Role", authorizer.RoleOwner.String())
 			req.Header.Set("X-Tenant-ID", "tenant-id")
 			rec := httptest.NewRecorder()
 
@@ -718,7 +628,7 @@ func TestCreateDeviceTag(t *testing.T) {
 				DeviceParam: requests.DeviceParam{UID: ""},
 				TagBody:     requests.TagBody{Tag: "tag"},
 			},
-			requiredMocks: func(req requests.DeviceCreateTag) {
+			requiredMocks: func(_ requests.DeviceCreateTag) {
 			},
 			expectedStatus: http.StatusBadRequest,
 		},
@@ -728,7 +638,7 @@ func TestCreateDeviceTag(t *testing.T) {
 				DeviceParam: requests.DeviceParam{UID: "1234"},
 				TagBody:     requests.TagBody{Tag: "tg"},
 			},
-			requiredMocks: func(req requests.DeviceCreateTag) {
+			requiredMocks: func(_ requests.DeviceCreateTag) {
 			},
 			expectedStatus: http.StatusBadRequest,
 		},
@@ -738,7 +648,7 @@ func TestCreateDeviceTag(t *testing.T) {
 				DeviceParam: requests.DeviceParam{UID: "1234"},
 				TagBody:     requests.TagBody{Tag: "BCD3821E12F7A6D89295D86E277F2C365D7A4C3FCCD75D8A2F46C0A556A8EBAAF0845C85D50241FC2F9806D8668FF75D262FDA0A055784AD36D8CA7D2BB600C9BCD3821E12F7A6D89295D86E277F2C365D7A4C3FCCD75D8A2F46C0A556A8EBAAF0845C85D50241FC2F9806D8668FF75D262FDA0A055784AD36D8CA7D2BB600C9"},
 			},
-			requiredMocks: func(req requests.DeviceCreateTag) {
+			requiredMocks: func(_ requests.DeviceCreateTag) {
 			},
 			expectedStatus: http.StatusBadRequest,
 		},
@@ -748,7 +658,7 @@ func TestCreateDeviceTag(t *testing.T) {
 				DeviceParam: requests.DeviceParam{UID: "1234"},
 				TagBody:     requests.TagBody{Tag: "test@"},
 			},
-			requiredMocks: func(req requests.DeviceCreateTag) {
+			requiredMocks: func(_ requests.DeviceCreateTag) {
 			},
 			expectedStatus: http.StatusBadRequest,
 		},
@@ -758,7 +668,7 @@ func TestCreateDeviceTag(t *testing.T) {
 				DeviceParam: requests.DeviceParam{UID: "1234"},
 				TagBody:     requests.TagBody{Tag: "test/"},
 			},
-			requiredMocks: func(req requests.DeviceCreateTag) {
+			requiredMocks: func(_ requests.DeviceCreateTag) {
 			},
 			expectedStatus: http.StatusBadRequest,
 		},
@@ -768,7 +678,7 @@ func TestCreateDeviceTag(t *testing.T) {
 				DeviceParam: requests.DeviceParam{UID: "1234"},
 				TagBody:     requests.TagBody{Tag: "test&"},
 			},
-			requiredMocks: func(req requests.DeviceCreateTag) {
+			requiredMocks: func(_ requests.DeviceCreateTag) {
 			},
 			expectedStatus: http.StatusBadRequest,
 		},
@@ -808,7 +718,7 @@ func TestCreateDeviceTag(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/devices/%s/tags", tc.updatePayload.UID), strings.NewReader(string(jsonData)))
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Role", guard.RoleOwner)
+			req.Header.Set("X-Role", authorizer.RoleOwner.String())
 			req.Header.Set("X-Tenant-ID", "tenant-id")
 			rec := httptest.NewRecorder()
 
@@ -835,7 +745,7 @@ func TestUpdateDeviceTag(t *testing.T) {
 				DeviceParam: requests.DeviceParam{UID: ""},
 				Tags:        []string{"tag1", "tag2"},
 			},
-			requiredMocks:  func(req requests.DeviceUpdateTag) {},
+			requiredMocks:  func(_ requests.DeviceUpdateTag) {},
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
@@ -844,7 +754,7 @@ func TestUpdateDeviceTag(t *testing.T) {
 				DeviceParam: requests.DeviceParam{UID: "1234"},
 				Tags:        []string{"tagduplicated", "tagduplicated"},
 			},
-			requiredMocks:  func(req requests.DeviceUpdateTag) {},
+			requiredMocks:  func(_ requests.DeviceUpdateTag) {},
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
@@ -853,7 +763,7 @@ func TestUpdateDeviceTag(t *testing.T) {
 				DeviceParam: requests.DeviceParam{UID: "1234"},
 				Tags:        []string{"test@"},
 			},
-			requiredMocks:  func(req requests.DeviceUpdateTag) {},
+			requiredMocks:  func(_ requests.DeviceUpdateTag) {},
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
@@ -862,7 +772,7 @@ func TestUpdateDeviceTag(t *testing.T) {
 				DeviceParam: requests.DeviceParam{UID: "1234"},
 				Tags:        []string{"test/"},
 			},
-			requiredMocks:  func(req requests.DeviceUpdateTag) {},
+			requiredMocks:  func(_ requests.DeviceUpdateTag) {},
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
@@ -871,7 +781,7 @@ func TestUpdateDeviceTag(t *testing.T) {
 				DeviceParam: requests.DeviceParam{UID: "1234"},
 				Tags:        []string{"test&"},
 			},
-			requiredMocks:  func(req requests.DeviceUpdateTag) {},
+			requiredMocks:  func(_ requests.DeviceUpdateTag) {},
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
@@ -880,7 +790,7 @@ func TestUpdateDeviceTag(t *testing.T) {
 				DeviceParam: requests.DeviceParam{UID: "1234"},
 				Tags:        []string{"tg"},
 			},
-			requiredMocks:  func(req requests.DeviceUpdateTag) {},
+			requiredMocks:  func(_ requests.DeviceUpdateTag) {},
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
@@ -889,7 +799,7 @@ func TestUpdateDeviceTag(t *testing.T) {
 				DeviceParam: requests.DeviceParam{UID: "1234"},
 				Tags:        []string{"BCD3821E12F7A6D89295D86E277F2C365D7A4C3FCCD75D8A2F46C0A556A8EBAAF0845C85D50241FC2F9806D8668FF75D262FDA0A055784AD36D8CA7D2BB600C9BCD3821E12F7A6D89295D86E277F2C365D7A4C3FCCD75D8A2F46C0A556A8EBAAF0845C85D50241FC2F9806D8668FF75D262FDA0A055784AD36D8CA7D2BB600C9"},
 			},
-			requiredMocks:  func(req requests.DeviceUpdateTag) {},
+			requiredMocks:  func(_ requests.DeviceUpdateTag) {},
 			expectedStatus: http.StatusBadRequest,
 		},
 		{
@@ -928,7 +838,7 @@ func TestUpdateDeviceTag(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api/devices/%s/tags", tc.updatePayload.UID), strings.NewReader(string(jsonData)))
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Role", guard.RoleOwner)
+			req.Header.Set("X-Role", authorizer.RoleOwner.String())
 			req.Header.Set("X-Tenant-ID", "tenant-id")
 			rec := httptest.NewRecorder()
 
@@ -952,7 +862,7 @@ func TestUpdateDevice(t *testing.T) {
 		expectedStatus int
 	}{
 		{
-			title: "fails when try to uodate a existing device",
+			title: "fails when try to update a existing device",
 			updatePayload: requests.DeviceUpdate{
 				DeviceParam: requests.DeviceParam{UID: "1234"},
 				Name:        &name,
@@ -989,7 +899,7 @@ func TestUpdateDevice(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api/devices/%s", tc.updatePayload.UID), strings.NewReader(string(jsonData)))
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("X-Role", guard.RoleOwner)
+			req.Header.Set("X-Role", authorizer.RoleOwner.String())
 			req.Header.Set("X-Tenant-ID", "tenant-id")
 			rec := httptest.NewRecorder()
 
